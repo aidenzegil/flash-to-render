@@ -54,7 +54,8 @@ const loader = new GLTFLoader();
 let current = null;
 
 function fit(object) {
-  const box = new THREE.Box3().setFromObject(object);
+  object.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(object, true);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
@@ -93,7 +94,7 @@ pick.addEventListener('change', () => show(pick.value || 'all.glb'));
 
 function resize() {
   const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
+  renderer.setSize(w, h);  // also sets the CSS size, otherwise a 2x pixel ratio shows a quarter of the view
   camera.aspect = w / h; camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize); resize();
