@@ -5,6 +5,7 @@
     flash-to-render serve                       # web UI to review boxes, render, preview
     flash-to-render regions export <id> <file>  # move hand-edited regions between machines
     flash-to-render regions import <id> <file>
+    flash-to-render label <id> [--backend caption|none] [--force]   # name the pieces
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from .pipeline import PipelineOptions, run
 from .segment import SegmentOptions
 from .trace import TraceOptions
 
-SUBCOMMANDS = ("convert", "preview", "serve", "regions")
+SUBCOMMANDS = ("convert", "preview", "serve", "regions", "label")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,6 +68,8 @@ def _build_parser() -> argparse.ArgumentParser:
     q.add_argument("--max-speckle", type=float, default=8.0, help="flag pieces whose speckle score exceeds this (default 8)")
     q.add_argument("--min-piece", type=int, default=150, help="flag pieces whose longest side is below this many px (default 150)")
     q.add_argument("--drop-flagged", action="store_true", help="do not write assets for flagged pieces")
+    q.add_argument("--label", choices=("none", "auto", "caption"), default="none", help="name pieces: auto/caption ask Claude (needs ANTHROPIC_API_KEY), none uses '<Sheet> row-col' (default)")
+    q.add_argument("--label-force", action="store_true", help="also rename pieces that already have a name")
     q.add_argument("--no-png", action="store_true")
     q.add_argument("--no-svg", action="store_true")
     q.add_argument("--no-glb", action="store_true")
@@ -88,6 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
     rg.add_argument("entry_id", help="library entry id, e.g. payday-spider-verse")
     rg.add_argument("file", type=Path, help="JSON file to write (export) or read (import)")
     rg.add_argument("--library", type=Path, default=None, help="library folder (default ~/.flash-to-render/library)")
+
+    lb = sub.add_parser("label", help="name a library entry's pieces (Claude when ANTHROPIC_API_KEY is set, else '<Sheet> row-col')")
+    lb.add_argument("entry_id", help="library entry id, e.g. payday-anime")
+    lb.add_argument("--backend", choices=("auto", "caption", "none"), default="auto")
+    lb.add_argument("--force", action="store_true", help="rename regions that already have a name")
+    lb.add_argument("--library", type=Path, default=None, help="library folder (default ~/.flash-to-render/library)")
     return parser
 
 
@@ -124,6 +133,8 @@ def _options_from_args(a: argparse.Namespace) -> PipelineOptions:
         write_png=not a.no_png,
         write_svg=not a.no_svg,
         write_glb=not a.no_glb,
+        label=a.label,
+        label_force=a.label_force,
     )
 
 
@@ -149,6 +160,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: the web UI needs the server extra: pip install 'flash-to-render[server]' ({exc})", file=sys.stderr)
             return 2
         return serve_app(args.library or DEFAULT_LIBRARY, port=args.port, open_browser=not args.no_open)
+
+    if args.command == "label":
+        from .label import label_entry
+        from .library import DEFAULT_LIBRARY, Library
+
+        lib = Library(args.library or DEFAULT_LIBRARY, seed=False)
+        try:
+            lib.get(args.entry_id)
+        except KeyError:
+            print(f"error: no library entry {args.entry_id!r} in {lib.root}", file=sys.stderr)
+            return 2
+        rep = label_entry(lib, args.entry_id, backend=args.backend, force=args.force)
+        if rep.reason:
+            print(f"note: {rep.reason}", file=sys.stderr)
+        print(f"{args.entry_id}: backend={rep.backend} named={rep.named} kept={rep.kept} fallback={rep.fallback} requests={rep.requests} failures={rep.failures}", file=sys.stderr)
+        for n in rep.names:
+            print(n)
+        return 0
 
     if args.command == "regions":
         from .library import DEFAULT_LIBRARY, Library, read_regions_file, write_regions_file

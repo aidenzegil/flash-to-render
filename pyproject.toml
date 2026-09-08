@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
+label = ["anthropic>=1.0"]
 dev = ["pytest>=8", "httpx>=0.27", "flash-to-render[server]"]
 
 [project.scripts]

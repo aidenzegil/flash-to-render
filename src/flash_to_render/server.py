@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from . import __version__
+from .label import label_entry, unique_names
 from .library import DEFAULT_LIBRARY, SEEDS, Entry, Library, _with_id
 from .pipeline import PipelineOptions, run
 from .segment import Box, Region, SegmentOptions, detect, load_gray
@@ -69,6 +70,11 @@ class BoxesIn(BaseModel):
     options: dict[str, Any] = {}
 
 
+class LabelIn(BaseModel):
+    backend: str = "auto"
+    force: bool = False
+
+
 class RenderIn(BaseModel):
     regions: list[RegionIn] | None = None
     boxes: list[BoxIn] | None = None
@@ -80,6 +86,7 @@ class RenderIn(BaseModel):
     fidelity: str = "fast"
     relief: bool = True
     stamp: str = "tone"
+    label: str = "none"
 
 
 def _segment_options(d: DetectIn | RenderIn) -> SegmentOptions:
@@ -95,6 +102,7 @@ def _regions_in(body: BoxesIn | RenderIn, width: int, height: int) -> list[Regio
     else:
         return None
     out: list[Region] = []
+    names = unique_names([r.name.strip() for r in raw])
     for i, r in enumerate(raw):
         if len(r.points) < 3:
             raise HTTPException(400, f"region {i} needs at least 3 points")
@@ -102,7 +110,7 @@ def _regions_in(body: BoxesIn | RenderIn, width: int, height: int) -> list[Regio
         if r.kind == "rect":
             xs, ys = [p[0] for p in pts], [p[1] for p in pts]
             pts = [(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))]
-        out.append(Region(pts, r.kind if r.kind in ("rect", "polygon") else "polygon", r.name.strip(), r.id or uuid.uuid4().hex[:6]))
+        out.append(Region(pts, r.kind if r.kind in ("rect", "polygon") else "polygon", names[i], r.id or uuid.uuid4().hex[:6]))
     return out
 
 
@@ -253,6 +261,16 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         regions = [_with_id(Region.from_box(b)) for b in boxes]
         return {"regions": [r.to_dict() for r in regions], "boxes": [b.to_dict() for b in boxes], "mode": mode, "options": opts.model_dump()}
 
+    @app.post("/api/library/{entry_id}/label")
+    def label(entry_id: str, body: LabelIn | None = None) -> dict:
+        """Name unnamed regions (all with ``force``) and persist them. Sends images to Claude only when a key is set."""
+        entry = ensure_boxes(entry_or_404(entry_id))
+        body = body or LabelIn()
+        if body.backend not in ("auto", "caption", "none"):
+            raise HTTPException(400, "backend must be auto, caption or none")
+        report = label_entry(library, entry.id, backend=body.backend, force=body.force)
+        return {**_regions_out(library.get(entry.id)), "report": report.to_dict()}
+
     # -- render jobs
     @app.post("/api/library/{entry_id}/render")
     def render(entry_id: str, body: RenderIn | None = None) -> dict:
@@ -278,6 +296,8 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
             trace=TraceOptions(threshold=body.threshold, smooth=body.smooth, fidelity="best" if body.fidelity == "best" else "fast", relief=body.relief),
             depth_frac=body.depth,
             stamp="binary" if body.stamp == "binary" else "tone",
+            label=body.label if body.label in ("auto", "caption", "none") else "none",
+            sheet_name=entry.name,
             debug=True,
         )
 

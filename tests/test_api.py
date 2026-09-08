@@ -115,11 +115,13 @@ def test_render_uses_edited_boxes_and_names(client):
     assert job["status"] == "done", job["error"]
     assert job["progress"] == {"done": 3, "total": 3, "current": job["pieces"][-1]["id"]}
 
-    ids = [p["id"] for p in job["pieces"]]
-    assert ids == ["00-sparkle", "01-heart-stripes", "02-pair"]
-    assert [p["name"] for p in job["pieces"]] == ["Sparkle", "Heart & Stripes", "pair"]
+    by_name = {p["name"]: p for p in job["pieces"]}
+    assert set(by_name) == {"Sparkle", "Heart & Stripes", "pair"}
+    assert [p["index"] for p in job["pieces"]] == [1, 2, 3]  # manifest is in reading order, 1-based
+    # all three sit in the top row (the wide box spans it), so left to right: sparkle, heart, pair
+    assert by_name["Sparkle"]["id"] == "01-sparkle" and by_name["Heart & Stripes"]["id"] == "02-heart-stripes" and by_name["pair"]["id"] == "03-pair"
     assert all(p["files"]["glb"] == f"{p['id']}.glb" for p in job["pieces"])
-    assert [p["bbox"] for p in job["pieces"]][2][:2] == [wide["x"], wide["y"]]
+    assert by_name["pair"]["bbox"][:2] == [wide["x"], wide["y"]]
 
     # the edited boxes were persisted as the entry's current regions
     assert [bx["name"] for bx in client.get(f"/api/library/{entry_id}/boxes").json()["regions"]] == ["Sparkle", "Heart & Stripes", "pair"]
@@ -134,7 +136,7 @@ def test_render_uses_edited_boxes_and_names(client):
     z = client.get(f"/api/jobs/{job['id']}/download.zip")
     assert z.status_code == 200 and z.headers["content-type"] == "application/zip"
     names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
-    assert {"00-sparkle.glb", "01-heart-stripes.glb", "02-pair.glb", "all.glb", "manifest.json", "segmentation.png"} <= set(names)
+    assert {"01-sparkle.glb", "02-heart-stripes.glb", "03-pair.glb", "all.glb", "manifest.json", "segmentation.png"} <= set(names)
     assert sum(n.endswith(".glb") for n in names) == 4
 
 
@@ -193,10 +195,10 @@ def test_polygon_region_render_excludes_neighbour(client):
     assert poly["bbox"] == both["bbox"] == [90, 90, 230, 230]
     assert both["ink_area"] == 2 * 100 * 100
     assert poly["ink_area"] == 100 * 100
-    assert poly["kind"] == "polygon" and poly["id"] == "00-a-only" and both["kind"] == "rect"
+    assert poly["kind"] == "polygon" and poly["id"] == "01-a-only" and both["kind"] == "rect"
     assert poly["triangles"] < both["triangles"]
     # the cutout PNG is transparent where design B was
-    png = Image.open(io.BytesIO(client.get(f"/api/jobs/{poly_job['id']}/preview/00-a-only.png").content))
+    png = Image.open(io.BytesIO(client.get(f"/api/jobs/{poly_job['id']}/preview/01-a-only.png").content))
     k = poly["png_scale"]
     assert png.size == (230 * k, 230 * k)
     alpha = np.asarray(png)[..., 3]

@@ -33,7 +33,7 @@ def test_segments_separate_designs_in_reading_order():
     # top-left, top-right, bottom-left, bottom-right (allowing for padding)
     assert origins[0][0] < origins[1][0] and origins[0][1] < origins[2][1]
     assert origins[2][0] < origins[3][0]
-    assert [p.id for p in pieces] == ["00", "01", "02", "03"]
+    assert [p.id for p in pieces] == ["01", "02", "03", "04"] and [p.number for p in pieces] == [1, 2, 3, 4]
 
 
 def test_nearby_strokes_merge_into_one_piece():
@@ -118,7 +118,7 @@ def test_polygon_region_excludes_neighbour_inside_its_bbox():
     assert poly_piece.bbox == rect_piece.bbox == (90, 90, 230, 230)
     assert rect_piece.ink_area == 2 * 100 * 100
     assert poly_piece.ink_area == 100 * 100
-    assert poly_piece.kind == "polygon" and poly_piece.id == "00-a-only"
+    assert poly_piece.kind == "polygon" and poly_piece.id == "01-a-only"
     # everything outside the polygon is paper in the crop
     assert poly_piece.gray[250 - 90, 250 - 90] == 255 and poly_piece.ink[250 - 90, 250 - 90] == 0
     assert poly_piece.gray[150 - 90, 150 - 90] == 0

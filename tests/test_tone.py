@@ -17,15 +17,27 @@ from flash_to_render.trace import TraceOptions, binarize, prepare, prepare_ink, 
 
 from conftest import FIXTURES
 
-OLD = {14: (210, 17), 21: (117, 4), 27: (102, 3), 7: (59, 21)}
+OLD = {"fan_cat": (210, 17), "flaming_cat": (117, 4), "flower": (102, 3), "zenitsu": (59, 21)}
 """(outers, holes) these pieces traced to before this change (the blur path, user render 2c27c44989)."""
+
+
+ANIME = {"fan_cat": (365, 473), "flaming_cat": (709, 707), "flower": (41, 932), "zenitsu": (1361, 56), "tanjiro": (499, 191), "kaigaku": (1127, 26), "banners": (824, 71)}
+"""Top-left corners of the pieces the tests look at (the shipped regions file may be re-ordered by the user)."""
+
+
+def by_corner(pieces, xy, tol=25):
+    x, y = xy
+    return min(pieces, key=lambda p: abs(p.x - x) + abs(p.y - y)) if min(abs(p.x - x) + abs(p.y - y) for p in pieces) <= tol else None
 
 
 @pytest.fixture(scope="module")
 def anime():
     regions = [Region.from_dict(r) for r in json.loads((FIXTURES / "payday-anime.regions.json").read_text())["regions"]]
     gray = load_gray(FIXTURES / "anime.webp")
-    return crop_pieces(gray, regions)
+    pieces = crop_pieces(gray, regions)
+    found = {k: by_corner(pieces, xy) for k, xy in ANIME.items()}
+    assert all(found.values()), found
+    return found
 
 
 def stipple(size: int = 200, dot: int = 3, pitch: int = 4, solid: bool = True) -> Piece:
@@ -52,7 +64,7 @@ def stipple(size: int = 200, dot: int = 3, pitch: int = 4, solid: bool = True) -
 
 def test_grey_line_art_is_routed_to_light_and_traces_far_fewer_pieces(anime):
     """Anime 14 (fan and cat), 21 (flaming cat), 27 (flower cluster), 07 (Zenitsu): grey outlines, not dots."""
-    limits = {14: 60, 21: 45, 27: 20, 7: 35}
+    limits = {"fan_cat": 60, "flaming_cat": 45, "flower": 20, "zenitsu": 35}
     for idx, limit in limits.items():
         piece = anime[idx]
         assert piece.speckle > 3 and piece.grey_ratio > 0.6  # the old gate called these "halftone"
@@ -70,7 +82,7 @@ def test_line_art_masks_are_byte_for_byte_unchanged_by_the_tone_gate(anime):
     """Crisp pieces on the same sheet (and Leap of Faith) never see the light/tone paths."""
     regions = [Region.from_dict(r) for r in json.loads((FIXTURES / "payday-spider-verse.regions.json").read_text())["regions"]]
     leap = crop_pieces(load_gray(FIXTURES / "spiderverse.webp"), [regions[5]])[0]
-    for piece in (anime[3], anime[6], anime[4], leap):
+    for piece in (anime["tanjiro"], anime["kaigaku"], anime["banners"], leap):
         opts = TraceOptions()
         assert route(piece, opts) == "line"
         auto, r, _ = prepare(piece, opts)
@@ -127,9 +139,9 @@ def test_tone_stamp_keeps_grey_and_stays_binary_for_line_art(anime):
         inked = alpha > 0.1
         return ((alpha > 0.2) & (alpha < 0.8) & inked).sum() / max(1, inked.sum())
 
-    shaded = mid_alpha_fraction(anime[14])
+    shaded = mid_alpha_fraction(anime["fan_cat"])
     assert shaded >= 0.05, shaded
-    crisp = mid_alpha_fraction(anime[3])  # solid black brushwork
+    crisp = mid_alpha_fraction(anime["tanjiro"])  # solid black brushwork
     assert crisp < shaded / 2, (crisp, shaded)
     # binary variant still available and really binary
     from flash_to_render.export import cutout_rgba_from_mask

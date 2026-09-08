@@ -42,6 +42,12 @@ class PipelineOptions:
     """Resolution of the ink cutout PNGs relative to the source crop."""
     stamp: str = "tone"
     """Ink cutout alpha: ``tone`` from the source grey (shading preserved), ``binary`` from the traced mask."""
+    label: str = "none"
+    """Piece naming: ``none`` = descriptive grid fallback for unnamed pieces, ``auto`` / ``caption`` = ask Claude
+    (``auto`` only when ``ANTHROPIC_API_KEY`` is set). Human names are always kept unless ``label_force``."""
+    label_force: bool = False
+    sheet_name: str | None = None
+    """Sheet label for fallback names (default: the input file's stem)."""
     scale: float = 0.001
     """Output units per source pixel. glTF is in metres, so the default makes 1 px = 1 mm."""
     max_speckle: float = 8.0
@@ -82,6 +88,9 @@ class PieceResult:
         p, t = self.piece, self.trace
         return {
             "id": p.id,
+            "index": p.number,
+            "row": p.row,
+            "col": p.col,
             "name": p.name,
             "kind": p.kind,
             "bbox": [p.x, p.y, p.w, p.h],
@@ -222,6 +231,12 @@ def run(
         mode, pieces = "boxes", crop_pieces(gray, boxes, options.segment)
     else:
         mode, pieces = detect_mode(gray, options)
+    from .label import label_pieces
+
+    naming = label_pieces(pieces, options.sheet_name or input_path.stem, backend=options.label, force=options.label_force)
+    if report and naming.reason:
+        print(f"  naming: {naming.reason}", file=report)
+    pieces = sorted(pieces, key=lambda p: p.number)  # outputs in reading order; the region list itself is untouched
     if report:
         print(f"{input_path.name}: {sheet_w}x{sheet_h}, mode={mode}, {len(pieces)} piece(s)", file=report)
     if options.debug and mode != "single":
@@ -270,6 +285,7 @@ def run(
         "fidelity_mode": options.trace.fidelity,
         "stamp": options.stamp,
         "relief": options.trace.relief,
+        "naming": naming.to_dict(),
         "scene": scene_path.name if scene_path else None,
         "options": {"segment": asdict(options.segment.resolved(gray.shape)), "trace": asdict(options.trace)},
         "pieces": [r.to_manifest() for r in results],

@@ -35,6 +35,7 @@ __all__ = [
     "crop_pieces",
     "owner_map",
     "piece_id",
+    "reading_positions",
     "slugify",
     "load_gray",
     "ink_mask",
@@ -182,6 +183,10 @@ class Piece:
     """Mid-grey pixels (100-230) per ink pixel inside the region: ~0.2-0.5 for crisp line art, >0.6 for shading."""
     id: str = ""
     name: str = ""
+    number: int = 0
+    """1-based position in reading order, derived from the current region list (never stored)."""
+    row: int = 0
+    col: int = 0
     kind: str = "rect"
     """``rect`` or ``polygon``: the kind of region this piece was cut with."""
     extra: dict = field(default_factory=dict)
@@ -298,10 +303,37 @@ def slugify(name: str) -> str:
     return out[:48]
 
 
-def piece_id(index: int, name: str = "") -> str:
-    """``"03"`` for unnamed pieces, ``"03-skull"`` for named ones: sortable *and* readable."""
+def piece_id(number: int, name: str = "") -> str:
+    """``"03"`` for unnamed pieces, ``"03-skull"`` for named ones: sortable *and* readable (``number`` is 1-based)."""
     slug = slugify(name) if name else ""
-    return f"{index:02d}-{slug}" if slug else f"{index:02d}"
+    return f"{number:02d}-{slug}" if slug else f"{number:02d}"
+
+
+def reading_positions(boxes: Sequence["Box"]) -> list[tuple[int, int, int]]:
+    """``(number, row, col)`` per box, all 1-based: rows by vertical overlap (>= half the shorter box), columns left to right.
+
+    Derived from whatever list you pass, so adding, deleting or moving a box renumbers the rest.
+    """
+    order = sorted(range(len(boxes)), key=lambda i: (boxes[i].y, boxes[i].x))
+    rows: list[list[int]] = []
+    for i in order:
+        b = boxes[i]
+        for row in rows:
+            a = boxes[row[0]]
+            overlap = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+            if overlap >= 0.5 * min(a.h, b.h):
+                row.append(i)
+                break
+        else:
+            rows.append([i])
+    rows.sort(key=lambda r: boxes[r[0]].y)
+    out = [(0, 0, 0)] * len(boxes)
+    n = 0
+    for r, row in enumerate(rows, start=1):
+        for c, i in enumerate(sorted(row, key=lambda i: boxes[i].x), start=1):
+            n += 1
+            out[i] = (n, r, c)
+    return out
 
 
 def _ink_components(gray: np.ndarray, opts: SegmentOptions) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -409,7 +441,11 @@ def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: Segm
     ink = ink_mask(gray, threshold=opts.threshold)
 
     regs = [r if isinstance(r, Region) else Region.from_box(r) for r in regions]
+    from .label import unique_names  # uniqueness is enforced wherever names enter
+
+    names = unique_names([r.name for r in regs])
     boxes = [r.bbox().clamp(full_w, full_h) for r in regs]
+    positions = reading_positions(boxes)
     masks = [r.mask(b) for r, b in zip(regs, boxes)]
     owner = owner_map(regs, boxes, masks, gray.shape)
 
@@ -438,8 +474,11 @@ def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: Segm
                 components=n_cc,
                 speckle=speck,
                 grey_ratio=grey_ratio(crop_gray, region, opts.threshold),
-                id=piece_id(idx, reg.name),
-                name=reg.name,
+                id=piece_id(positions[idx][0], names[idx]),
+                name=names[idx],
+                number=positions[idx][0],
+                row=positions[idx][1],
+                col=positions[idx][2],
                 kind=reg.kind,
             )
         )

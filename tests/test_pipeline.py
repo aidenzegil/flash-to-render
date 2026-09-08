@@ -154,7 +154,9 @@ def test_user_regions_render_nothing_empty_unless_truly_blank(name):
         inside = int(ink[box.y : box.y + box.h, box.x : box.x + box.w][reg.mask(box)].sum() // 255)
         if inside > 50:
             assert piece.ink_area > 0, (name, piece.id, inside)
-        # the two touching Hashira figures on the anime sheet both get their own side of the border
+    # the two touching Hashira figures on the anime sheet both get their own side of the border
     if name == "anime":
-        assert pieces[37].ink_area > 3000 and pieces[26].ink_area > 3000
-        assert pieces[37].ink_area + pieces[26].ink_area >= 0.95 * (10927 + 5000)
+        figure = min(pieces, key=lambda p: abs(p.x - 677) + abs(p.y - 925))
+        neighbour = min(pieces, key=lambda p: abs(p.x - 537) + abs(p.y - 879))
+        assert figure.ink_area > 3000 and neighbour.ink_area > 3000
+        assert figure.ink_area + neighbour.ink_area >= 0.95 * (10927 + 5000)

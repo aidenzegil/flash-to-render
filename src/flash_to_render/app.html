@@ -80,6 +80,7 @@
     </div>
     <button id="save" disabled>Save boxes</button>
     <a id="export" hidden download>Export regions</a>
+    <button id="suggest" disabled title="Name unnamed regions (Claude when the server has ANTHROPIC_API_KEY, else Sheet row-col)">Suggest names</button>
     <button id="render" class="primary" disabled>Render</button>
     <span id="hint">Box: drag to move, handles to resize, drag on empty canvas to add · Lasso: drag a freehand outline · polygon vertices: drag to adjust, double-click an edge to insert, Delete removes · double-click a region to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects · B / L switch tools</span>
   </div>
@@ -245,7 +246,7 @@ async function openEntry(id) {
     $('save').textContent = 'Save boxes';
     applySettings(data.options);
     $('empty').hidden = true; canvas.hidden = false;
-    $('redetect').disabled = $('save').disabled = $('render').disabled = false;
+    $('redetect').disabled = $('save').disabled = $('render').disabled = $('suggest').disabled = false;
     $('export').href = `/api/library/${id}/regions.json`; $('export').hidden = false;
     $('results').classList.remove('on');
     fit(); draw();
@@ -280,9 +281,32 @@ function rectHandles(reg) {
   const x0 = b.x * s, y0 = b.y * s, x1 = (b.x + b.w) * s, y1 = (b.y + b.h) * s, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
   return [['nw', x0, y0], ['n', xm, y0], ['ne', x1, y0], ['e', x1, ym], ['se', x1, y1], ['s', xm, y1], ['sw', x0, y1], ['w', x0, ym]];
 }
+// 1-based reading-order numbers derived from the current regions (same rule as segment.reading_positions)
+function readingNumbers() {
+  const boxes = state.regions.map(bbox);
+  const order = boxes.map((_, i) => i).sort((i, j) => (boxes[i].y - boxes[j].y) || (boxes[i].x - boxes[j].x));
+  const rows = [];
+  for (const i of order) {
+    const b = boxes[i];
+    let placed = false;
+    for (const row of rows) {
+      const a = boxes[row[0]];
+      const overlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (overlap >= 0.5 * Math.min(a.h, b.h)) { row.push(i); placed = true; break; }
+    }
+    if (!placed) rows.push([i]);
+  }
+  rows.sort((r1, r2) => boxes[r1[0]].y - boxes[r2[0]].y);
+  const num = new Array(boxes.length).fill(0);
+  let n = 0;
+  for (const row of rows) for (const i of row.sort((i, j) => boxes[i].x - boxes[j].x)) num[i] = ++n;
+  return num;
+}
+
 function draw() {
   if (!state.img) return;
   const s = state.scale, d = state.dpr;
+  const numbers = readingNumbers();
   ctx.setTransform(d, 0, 0, d, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(state.img, 0, 0, state.img.width * s, state.img.height * s);
@@ -296,7 +320,7 @@ function draw() {
     ctx.strokeStyle = sel ? '#2f6fdb' : '#c8321e';
     ctx.stroke();
     const b = bbox(reg), x = b.x * s, y = b.y * s;
-    const label = String(i).padStart(2, '0') + (reg.name ? ' ' + reg.name : '') + (reg.kind === 'polygon' ? ' ◌' : '');
+    const label = String(numbers[i]) + (reg.name ? ' ' + reg.name : '') + (reg.kind === 'polygon' ? ' ◌' : '');
     ctx.font = '11px system-ui, sans-serif';
     const tw = ctx.measureText(label).width + 8, ly = y - 16 < 0 ? y : y - 16;
     ctx.fillStyle = sel ? '#2f6fdb' : '#c8321e';
@@ -443,9 +467,9 @@ canvas.addEventListener('dblclick', (ev) => {
   const i = hitRegion(p);
   if (i < 0) return;
   select(i);
-  const name = prompt('Name for region ' + String(i).padStart(2, '0'), state.regions[i].name || '');
+  const name = prompt('Name for piece No. ' + readingNumbers()[i], state.regions[i].name || '');
   if (name === null) return;
-  state.regions[i].name = name.trim();
+  state.regions[i].name = uniqueName(name.trim(), i);
   setDirty(); draw();
 });
 
@@ -469,6 +493,33 @@ addEventListener('keydown', (ev) => {
   if (ev.target === canvas || /INPUT|SELECT|TEXTAREA/.test(ev.target.tagName)) return;
   if (ev.key === 'b' || ev.key === 'B') setTool('box');
   if (ev.key === 'l' || ev.key === 'L') setTool('lasso');
+});
+
+// names must be unique within the entry: "Mask", "Mask II", "Mask III" (same rule as the server)
+const ROMAN = (n) => { const t = [[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']]; let s = ''; for (const [v, r] of t) while (n >= v) { s += r; n -= v; } return s; };
+function uniqueName(name, selfIndex) {
+  if (!name) return '';
+  const taken = new Set(state.regions.filter((_, k) => k !== selfIndex).map((r) => (r.name || '').trim().toLowerCase()).filter(Boolean));
+  let candidate = name, n = 1;
+  while (taken.has(candidate.toLowerCase())) { n += 1; candidate = `${name} ${ROMAN(n)}`; }
+  return candidate;
+}
+
+$('suggest').addEventListener('click', async () => {
+  if (!state.entry) return;
+  if (state.dirty) { try { await saveBoxes(); } catch (e) { say('save failed: ' + e.message, true); return; } }
+  say('naming…');
+  $('suggest').disabled = true;
+  try {
+    const data = await api(`/api/library/${state.entry.id}/label`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'auto', force: false }) });
+    const byId = new Map(data.regions.map((r) => [r.id, r.name]));
+    for (const r of state.regions) if (byId.has(r.id)) r.name = byId.get(r.id) || '';
+    draw();
+    const rep = data.report;
+    say(`named ${rep.named} with ${rep.backend}, ${rep.fallback} fallback, ${rep.kept} kept` + (rep.reason ? ' - ' + rep.reason : ''), !!rep.reason);
+    loadLibrary();
+  } catch (e) { say('naming failed: ' + e.message, true); }
+  $('suggest').disabled = false;
 });
 
 // ------------------------------------------------------------------ actions

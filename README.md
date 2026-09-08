@@ -219,6 +219,40 @@ with a piece that is speckly *and* grey (the old "halftone" gate):
 Crisp black line art never touches any of this: its mask is byte-for-byte the
 plain edge-aware binarisation, which the tests check.
 
+## Naming pieces
+
+Every piece gets a name, and within one render (and one library entry) no
+two pieces share one:
+
+- **Human names win.** A name typed in the editor (or sent in a region PUT)
+  is never overwritten unless you pass `--force`.
+- **Uniqueness is enforced wherever names enter** - region PUT, detection,
+  the labeler, the editor's rename and the manifest writer. Duplicates are
+  disambiguated deterministically: `Kitsune Mask`, `Kitsune Mask II`,
+  `Kitsune Mask III` ...
+- **Numbering** is 1-based reading order (rows top to bottom, left to
+  right) derived from the *current* region list, never stored: add, delete or
+  move a region and the others renumber, in the editor and in the output
+  (`01.glb`, `02.png`, ...). The manifest carries `index`, `row` and `col`.
+  An unnamed piece displays as `<Sheet> No. <index>` (`Anime No. 12`); a
+  typed name stays with its region when numbers shift.
+- **Labeler** (`label.py`): `flash-to-render label <library-id> [--backend
+  caption|none] [--force]`, `--label auto|caption|none` on `convert`,
+  `POST /api/library/{id}/label`, and the editor's **Suggest names** button.
+  The `caption` backend sends each unnamed piece's stamp (downscaled to
+  512 px, over white) to Claude (`claude-opus-5`), several images per request,
+  and asks for a JSON array of 2-4 word Title Case names (legible text in the
+  design becomes its name). Malformed replies are retried once; any failure
+  falls back to the grid name. Names are written back into the library
+  entry's regions, so the editor shows them and renders use them.
+
+Install the optional SDK with `pip install -e ".[label]"` and set
+`ANTHROPIC_API_KEY`. **Privacy:** images leave your machine only when that
+key is set *and* the labeler is invoked (`label`, `--label`, the API endpoint
+or the Suggest names button); with no key, `auto` silently uses the fallback
+and says so in the report, and `--backend caption` warns and does the same.
+Renders never call the API unless asked to.
+
 ## Tuning
 
 | flag | default | what it does |
