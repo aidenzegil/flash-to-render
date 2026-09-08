@@ -230,9 +230,10 @@ async function openEntry(id) {
     state.entry = entries.find((e) => e.id === id);
     for (const li of $('library').children) li.classList.toggle('active', li.dataset.id === id);
     const img = new Image();
+    const loaded = new Promise((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('image failed to load')); });
     img.src = `/api/library/${id}/image?t=${Date.now()}`;
-    await img.decode();
     const data = await api(`/api/library/${id}/boxes`);
+    await loaded;  // not img.decode(): Chrome can leave that pending forever on big images
     state.img = img;
     state.regions = data.regions.map(fromApi);
     state.selected = -1; state.vertex = -1; state.dirty = false; state.mode = data.mode;
@@ -248,14 +249,18 @@ async function openEntry(id) {
 }
 
 function fit() {
+  // fit the whole sheet in the viewport (width and height) so editing never scrolls the page
   if (!state.img) return;
-  const cw = Math.max(200, $('stage').clientWidth - 2);
+  const stage = $('stage');
+  const cw = Math.max(200, stage.clientWidth - 2);
+  const ch = Math.max(200, innerHeight - stage.getBoundingClientRect().top - 16);
   state.dpr = Math.min(devicePixelRatio || 1, 2);
-  state.scale = cw / state.img.width;
-  canvas.style.width = cw + 'px';
-  canvas.style.height = Math.round(state.img.height * state.scale) + 'px';
-  canvas.width = Math.round(cw * state.dpr);
-  canvas.height = Math.round(state.img.height * state.scale * state.dpr);
+  state.scale = Math.min(cw / state.img.width, ch / state.img.height);
+  const w = Math.round(state.img.width * state.scale), h = Math.round(state.img.height * state.scale);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  canvas.width = Math.round(w * state.dpr);
+  canvas.height = Math.round(h * state.dpr);
 }
 addEventListener('resize', () => { fit(); draw(); });
 
@@ -347,20 +352,20 @@ canvas.addEventListener('pointerdown', (ev) => {
   canvas.focus({ preventScroll: true });
   const p = toImg(ev);
   const sel = state.regions[state.selected];
-  if (state.tool === 'lasso') {
-    select(-1);
-    state.drag = { mode: 'lasso', path: [clampPoint([p.x, p.y])] };
-  } else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) {
-    state.drag = { mode: 'resize', handle: hitRectHandle(sel, p), start: p, orig: bbox(sel) };
-  } else if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) {
+  if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) {  // vertex handles work in both tools
     state.vertex = hitVertex(sel, p);
     state.drag = { mode: 'vertex', start: p, orig: sel.points[state.vertex].slice() };
+  } else if (state.tool === 'lasso') {
+    select(-1);
+    state.drag = { mode: 'lasso', start: p, path: [clampPoint([p.x, p.y])] };
+  } else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) {
+    state.drag = { mode: 'resize', handle: hitRectHandle(sel, p), start: p, orig: bbox(sel) };
   } else {
     const i = hitRegion(p);
     if (i >= 0) { select(i); state.drag = { mode: 'move', start: p, orig: state.regions[i].points.map((q) => q.slice()) }; }
     else { select(-1); state.drag = { mode: 'create', start: p, reg: null }; }
   }
-  canvas.setPointerCapture(ev.pointerId);
+  try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
   draw();
 });
 canvas.addEventListener('pointermove', (ev) => {
@@ -368,9 +373,9 @@ canvas.addEventListener('pointermove', (ev) => {
   const p = toImg(ev);
   if (!state.drag) {
     const sel = state.regions[state.selected];
-    if (state.tool === 'lasso') canvas.style.cursor = 'crosshair';
+    if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) canvas.style.cursor = 'pointer';
+    else if (state.tool === 'lasso') canvas.style.cursor = 'crosshair';
     else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) canvas.style.cursor = cursorFor(hitRectHandle(sel, p));
-    else if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) canvas.style.cursor = 'pointer';
     else canvas.style.cursor = hitRegion(p) >= 0 ? 'move' : 'crosshair';
     return;
   }
@@ -421,10 +426,13 @@ canvas.addEventListener('pointercancel', endDrag);
 
 canvas.addEventListener('dblclick', (ev) => {
   const p = toImg(ev);
-  const sel = state.regions[state.selected];
-  if (sel && sel.kind === 'polygon' && hitVertex(sel, p) < 0) {
-    const e = hitEdge(sel, p);
-    if (e >= 0) { sel.points.splice(e + 1, 0, clampPoint([p.x, p.y])); state.vertex = e + 1; setDirty(); draw(); return; }
+  // double-click on a polygon edge inserts a vertex (selected polygon first, then any polygon under the pointer)
+  const order = [state.selected, ...state.regions.keys()].filter((i, k, a) => i >= 0 && a.indexOf(i) === k);
+  for (const i of order) {
+    const reg = state.regions[i];
+    if (!reg || reg.kind !== 'polygon' || hitVertex(reg, p) >= 0) continue;
+    const e = hitEdge(reg, p);
+    if (e >= 0) { reg.points.splice(e + 1, 0, clampPoint([p.x, p.y])); select(i, e + 1); setDirty(); draw(); return; }
   }
   const i = hitRegion(p);
   if (i < 0) return;

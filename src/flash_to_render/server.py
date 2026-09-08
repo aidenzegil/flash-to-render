@@ -172,7 +172,7 @@ class Library:
     def _load(self, meta: Path) -> Entry:
         d = json.loads(meta.read_text())
         if "regions" not in d and d.get("boxes") is not None:  # sidecars written before polygons existed
-            d["regions"] = [Region.from_box(Box.from_dict(b)).to_dict() for b in d["boxes"]]
+            d["regions"] = [_with_id(Region.from_box(Box.from_dict(b))).to_dict() for b in d["boxes"]]
         return Entry(**{k: d.get(k) for k in Entry.__dataclass_fields__ if k in d})
 
 
