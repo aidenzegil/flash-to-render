@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+import cv2
 import numpy as np
 import trimesh
 from PIL import Image
@@ -15,6 +16,7 @@ from .segment import Piece
 
 __all__ = [
     "cutout_rgba",
+    "cutout_rgba_from_mask",
     "write_cutout_png",
     "write_svg",
     "mesh_to_trimesh",
@@ -44,9 +46,34 @@ def cutout_rgba(piece: Piece, paper_level: float = 250.0, ink_level: float = 40.
     return rgba
 
 
-def write_cutout_png(piece: Piece, path: str | Path, **levels: float) -> Path:
+def cutout_rgba_from_mask(mask: np.ndarray, mask_scale: int, out_scale: int = 2) -> np.ndarray:
+    """Alpha-matte from the cleaned ink mask (``mask_scale`` x source), resampled to ``out_scale`` x source.
+
+    Area resampling from the higher-resolution mask gives crisp, antialiased
+    edges instead of the blur of a 1x threshold; RGB stays white so it tints.
+    """
+    h, w = mask.shape
+    ow, oh = round(w * out_scale / mask_scale), round(h * out_scale / mask_scale)
+    interp = cv2.INTER_AREA if out_scale <= mask_scale else cv2.INTER_CUBIC
+    alpha = cv2.resize(mask, (max(1, ow), max(1, oh)), interpolation=interp)
+    rgba = np.empty((*alpha.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = 255
+    rgba[..., 3] = alpha
+    return rgba
+
+
+def write_cutout_png(
+    piece: Piece,
+    path: str | Path,
+    mask: np.ndarray | None = None,
+    mask_scale: int = 1,
+    out_scale: int = 2,
+    **levels: float,
+) -> Path:
+    """Write the ink cutout: from the cleaned hi-res ``mask`` when given (at ``out_scale`` x), else from the raw crop."""
     path = Path(path)
-    Image.fromarray(cutout_rgba(piece, **levels), "RGBA").save(path, optimize=True)
+    rgba = cutout_rgba_from_mask(mask, mask_scale, out_scale) if mask is not None else cutout_rgba(piece, **levels)
+    Image.fromarray(rgba, "RGBA").save(path, optimize=True)
     return path
 
 

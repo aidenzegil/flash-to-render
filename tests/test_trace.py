@@ -45,7 +45,7 @@ def test_nest_rings_by_depth():
 def test_wrong_polarity_produces_a_card_and_guard_flips_it():
     ink = donut_mask()
     # What happens if you hand potrace the ink mask directly (its `.invert()` makes it trace the paper).
-    _path, wrong, = _trace_rings(ink, TraceOptions())[:2]
+    _path, wrong = _trace_rings(ink, TraceOptions(), 1)
     assert is_cardlike(wrong, ink.shape)
     assert card_likeness(wrong, ink.shape) > 0.85
 

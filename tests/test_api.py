@@ -200,8 +200,10 @@ def test_polygon_region_render_excludes_neighbour(client):
     assert poly["triangles"] < both["triangles"]
     # the cutout PNG is transparent where design B was
     png = Image.open(io.BytesIO(client.get(f"/api/jobs/{poly_job['id']}/preview/00-a-only.png").content))
+    k = poly["png_scale"]
+    assert png.size == (230 * k, 230 * k)
     alpha = np.asarray(png)[..., 3]
-    assert alpha[250 - 90, 250 - 90] == 0 and alpha[150 - 90, 150 - 90] == 255
+    assert alpha[(250 - 90) * k, (250 - 90) * k] == 0 and alpha[(150 - 90) * k, (150 - 90) * k] == 255
     # the polygon is what the entry now remembers
     saved = client.get(f"/api/library/{entry['id']}/boxes").json()["regions"]
     assert saved[0]["kind"] == "rect" and saved[0]["name"] == "both"  # last render wins

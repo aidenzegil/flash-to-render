@@ -13,6 +13,7 @@ from shapely.geometry import Polygon
 
 from flash_to_render.cli import main
 from flash_to_render.pipeline import PipelineOptions, run
+from flash_to_render.fidelity import rasterize
 from flash_to_render.trace import card_likeness, is_cardlike
 
 from conftest import FIXTURES, SHEETS
@@ -43,16 +44,17 @@ def test_no_card_like_outer_rings(sheet_results, name):
     """The polarity bug: the design traced as a hole in a rectangular card."""
     for r in sheet_results[name].pieces:
         assert r.trace is not None
-        shape = r.trace.ink.shape
+        k = r.trace.scale  # the traced mask is at k x source resolution, the polygons are in source px
+        shape = (r.trace.ink.shape[0] / k, r.trace.ink.shape[1] / k)
         for poly in r.trace.polygons:
             outer = Polygon(poly.outer)
             ratio = outer.area / max(1.0, poly.bbox_area)
             if ratio >= 0.85:
-                # only allowed when the mask really is a (mostly) filled rectangle there: a card has a
-                # sparse drawing inside it, a rectangular design element is dense ink with a few holes
-                mn, mx = poly.outer.min(axis=0).astype(int), poly.outer.max(axis=0).astype(int)
-                sub = r.trace.ink[max(0, mn[1]) : mx[1], max(0, mn[0]) : mx[0]]
-                assert sub.size and (sub > 0).mean() > 0.5, (name, r.piece.id, ratio)
+                # only allowed when the mask really is ink where the ring is solid: a card has a sparse
+                # drawing inside it, a rectangular design element (or frame with holes) is dense ink
+                solid = rasterize([poly], r.trace.ink.shape, k) > 0
+                density = (r.trace.ink[solid] > 0).mean() if solid.any() else 0.0
+                assert density > 0.5, (name, r.piece.id, ratio, density)
                 assert not is_cardlike([poly], shape), (name, r.piece.id)
         assert card_likeness(r.trace.polygons, shape) < 0.85, (name, r.piece.id)
 
@@ -79,7 +81,8 @@ def test_outputs_exist_and_glbs_load(sheet_results, name):
         assert {"id", "bbox", "speckle", "triangles", "quality", "files"} <= entry.keys()
         assert entry["quality"] in ("ok", "tiny", "speckle", "empty")
         png = Image.open(out / entry["files"]["png"])
-        assert png.mode == "RGBA" and png.size == (entry["bbox"][2], entry["bbox"][3])
+        k = entry["png_scale"]
+        assert k == 2 and png.mode == "RGBA" and png.size == (entry["bbox"][2] * k, entry["bbox"][3] * k)
         rgb = np.asarray(png)[..., :3]
         assert rgb.min() == 255  # white, tintable
         assert (out / entry["files"]["svg"]).read_text().startswith("<svg")
@@ -102,7 +105,8 @@ def test_depth_is_a_cast_object_not_a_slab(sheet_results):
     for res in sheet_results.values():
         for r in res.pieces:
             frac = r.depth_px / r.piece.longest_side
-            assert 0.03 <= frac <= 0.04
+            fine = r.trace.fidelity.thin_fraction > 0.3
+            assert (0.02 <= frac <= 0.03) if fine else (0.03 <= frac <= 0.04)
 
 
 def test_single_design_mode_auto_and_forced(tmp_path):

@@ -48,10 +48,14 @@ def _build_parser() -> argparse.ArgumentParser:
     seg.add_argument("--margin", type=float, default=0.015, help="fraction of the short side to ignore at the sheet edges (default 0.015)")
 
     tr = c.add_argument_group("tracing")
+    tr.add_argument("--fidelity", choices=("fast", "best"), default="fast", help="fast: one hi-res trace per piece; best: search a small parameter grid and keep the best fidelity score under the triangle budget")
+    tr.add_argument("--upscale", type=int, default=3, help="work at this multiple of the source resolution per piece (default 3)")
+    tr.add_argument("--binarize", choices=("adaptive", "global"), default="adaptive", help="adaptive keeps 1-2 px lines (default)")
+    tr.add_argument("--triangle-budget", type=int, default=20000, help="best mode: prefer candidates under this many triangles per piece")
     tr.add_argument("--smooth", choices=("auto", "on", "off"), default="auto", help="halftone pre-blur: auto = only speckly pieces (default)")
     tr.add_argument("--smooth-speckle", type=float, default=3.0, help="auto mode: smooth pieces whose raw speckle exceeds this (default 3.0)")
-    tr.add_argument("--turdsize", type=int, default=14, help="potrace: ignore ink blobs smaller than this many px (default 14)")
-    tr.add_argument("--simplify", type=float, default=0.9, help="polyline simplification tolerance in px (default 0.9)")
+    tr.add_argument("--turdsize", type=int, default=4, help="potrace: ignore blobs smaller than this many source px (default 4)")
+    tr.add_argument("--simplify", type=float, default=0.5, help="polyline simplification tolerance in source px (default 0.5)")
 
     m = c.add_argument_group("mesh")
     m.add_argument("--depth", type=float, default=DEFAULT_DEPTH_FRAC, help=f"extrusion depth as a fraction of the longest side (default {DEFAULT_DEPTH_FRAC})")
@@ -102,6 +106,10 @@ def _options_from_args(a: argparse.Namespace) -> PipelineOptions:
             smooth_speckle=a.smooth_speckle,
             turdsize=a.turdsize,
             simplify_px=a.simplify,
+            fidelity=a.fidelity,
+            upscale=a.upscale,
+            binarize=a.binarize,
+            triangle_budget=a.triangle_budget,
         ),
         depth_frac=a.depth,
         scale=a.scale,

@@ -38,6 +38,7 @@ __all__ = [
     "load_gray",
     "ink_mask",
     "speckle_score",
+    "grey_ratio",
     "segment_sheet",
     "absorb_small",
     "reading_order",
@@ -85,6 +86,14 @@ def ink_mask(
         el = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, el)
     return mask
+
+
+def grey_ratio(gray: np.ndarray, region: np.ndarray, threshold: int = 150) -> float:
+    """Mid-grey pixels per ink pixel inside ``region``: the halftone signal (see :class:`Piece.grey_ratio`)."""
+    g = gray[region]
+    ink = int((g < threshold).sum())
+    mid = int(((g >= 100) & (g < 230)).sum())
+    return mid / ink if ink else 0.0
 
 
 def speckle_score(mask: np.ndarray) -> tuple[int, float]:
@@ -168,6 +177,8 @@ class Piece:
     ink_area: int = 0
     components: int = 0
     speckle: float = 0.0
+    grey_ratio: float = 0.0
+    """Mid-grey pixels (100-230) per ink pixel inside the region: ~0.2-0.5 for crisp line art, >0.6 for shading."""
     id: str = ""
     name: str = ""
     kind: str = "rect"
@@ -437,6 +448,7 @@ def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: Segm
                 ink_area=int(np.count_nonzero(crop_ink)),
                 components=n_cc,
                 speckle=speck,
+                grey_ratio=grey_ratio(crop_gray, region, opts.threshold),
                 id=piece_id(idx, reg.name),
                 name=reg.name,
                 kind=reg.kind,

@@ -35,6 +35,11 @@ class PipelineOptions:
     trace: TraceOptions = field(default_factory=TraceOptions)
     depth_frac: float = DEFAULT_DEPTH_FRAC
     """Extrusion depth as a fraction of each piece's longest side."""
+    fine_depth_frac: float = 0.025
+    """Depth fraction used instead for fine pieces (thin features are more than ``fine_thin_fraction`` of the ink)."""
+    fine_thin_fraction: float = 0.3
+    png_scale: int = 2
+    """Resolution of the ink cutout PNGs relative to the source crop."""
     scale: float = 0.001
     """Output units per source pixel. glTF is in metres, so the default makes 1 px = 1 mm."""
     max_speckle: float = 8.0
@@ -59,6 +64,7 @@ class PieceResult:
     quality: str
     warnings: list[str] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)
+    png_scale: int = 1
 
     @property
     def triangles(self) -> int:
@@ -79,6 +85,7 @@ class PieceResult:
             "components": t.components if t else p.components,
             "speckle": round(t.speckle if t else p.speckle, 3),
             "raw_speckle": round(p.speckle, 3),
+            "grey_ratio": round(p.grey_ratio, 3),
             "smoothed": bool(t.smoothed) if t else False,
             "polarity_flipped": bool(t.flipped_polarity) if t else False,
             "outers": t.outer_count if t else 0,
@@ -86,6 +93,9 @@ class PieceResult:
             "vertices": self.vertices,
             "triangles": self.triangles,
             "depth_px": round(self.depth_px, 3),
+            "png_scale": self.png_scale,
+            "fidelity": t.fidelity.to_dict() if t and t.fidelity else None,
+            "trace_params": t.params if t else {},
             "quality": self.quality,
             "warnings": self.warnings,
             "files": self.files,
@@ -132,8 +142,9 @@ def process_pieces(pieces: list[Piece], options: PipelineOptions, progress: Prog
     """Trace and extrude every piece (no files written)."""
     results: list[PieceResult] = []
     for i, piece in enumerate(pieces):
-        depth_px = depth_for(piece.longest_side, options.depth_frac)
         trace = trace_piece(piece, options.trace)
+        fine = trace.fidelity is not None and trace.fidelity.thin_fraction > options.fine_thin_fraction
+        depth_px = depth_for(piece.longest_side, options.fine_depth_frac if fine else options.depth_frac)
         mesh = extrude(trace.polygons, depth_px, center=(piece.w / 2, piece.h / 2), scale=options.scale)
         quality, warnings = _classify(piece, trace, mesh, options)
         results.append(PieceResult(piece=piece, trace=trace, mesh=mesh, depth_px=depth_px, quality=quality, warnings=warnings))
@@ -154,10 +165,11 @@ def _sheet_levels(gray: np.ndarray) -> tuple[float, float]:
 def _report_line(r: PieceResult) -> str:
     p = r.piece
     smoothed = " smoothed" if r.trace and r.trace.smoothed else ""
+    fid = f"  fidelity={r.trace.fidelity.score:.3f}" if r.trace and r.trace.fidelity else ""
     return (
         f"  {p.id:<8s}{p.w:4d}x{p.h:<4d} at ({p.x},{p.y})  ink={p.ink_area:6d}  "
         f"speckle={r.trace.speckle if r.trace else p.speckle:5.2f}  outers={r.trace.outer_count if r.trace else 0:3d}  "
-        f"holes={r.trace.hole_count if r.trace else 0:3d}  tris={r.triangles:6d}  {r.quality}{smoothed}"
+        f"holes={r.trace.hole_count if r.trace else 0:3d}  tris={r.triangles:6d}{fid}  {r.quality}{smoothed}"
     )
 
 
@@ -202,7 +214,12 @@ def run(
         if options.drop_flagged and r.quality != "ok":
             continue
         if options.write_png:
-            r.files["png"] = write_cutout_png(p, out_dir / f"{p.id}.png", paper_level=paper, ink_level=ink).name
+            if r.trace is not None:
+                r.png_scale = options.png_scale
+                r.files["png"] = write_cutout_png(p, out_dir / f"{p.id}.png", mask=r.trace.ink, mask_scale=r.trace.scale, out_scale=options.png_scale).name
+            else:
+                r.png_scale = 1
+                r.files["png"] = write_cutout_png(p, out_dir / f"{p.id}.png", paper_level=paper, ink_level=ink).name
         if r.trace and options.write_svg:
             r.files["svg"] = write_svg(out_dir / f"{p.id}.svg", r.trace.svg_d, p.w, p.h).name
         if r.mesh is not None and not r.mesh.is_empty and options.write_glb:
@@ -223,6 +240,7 @@ def run(
         "units": "metres" if options.scale == 0.001 else "source px * scale",
         "scale": options.scale,
         "depth_frac": options.depth_frac,
+        "fidelity_mode": options.trace.fidelity,
         "scene": scene_path.name if scene_path else None,
         "options": {"segment": asdict(options.segment.resolved(gray.shape)), "trace": asdict(options.trace)},
         "pieces": [r.to_manifest() for r in results],

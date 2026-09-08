@@ -150,6 +150,45 @@ scale and every bbox in source pixels.
 - Quantising positions to int16 and then scaling in place truncates to zero.
   Scale first (`--scale` is applied before anything is stored).
 
+## Fine lines
+
+Thin linework is where a naive trace falls apart: 1-2 px seams and small
+counters vanish and a caption turns into dots. The tracer therefore works
+per piece at a higher resolution and measures itself:
+
+1. **Upscale** the crop 3x (4x in `best` mode) with bicubic interpolation
+   before anything is thresholded or traced; every pixel-based parameter
+   (turdsize, simplification tolerance, close kernel, minimum hole area) is
+   scaled with it and the geometry comes back in source pixels.
+2. **Edge-aware binarisation**: unsharp mask, then a global threshold for solid
+   ink OR-ed with a Gaussian adaptive threshold (`adaptiveThreshold`) so thin
+   strokes and small counters survive. Line art is never blurred; only
+   genuinely halftoned pieces get the blur + close treatment, gated on
+   *both* a high speckle score and a high mid-grey ratio (a caption is
+   speckly but black; shading is grey).
+3. **Small things survive**: turdsize 4 source px², minimum hole area 1.5 px²,
+   a 0.5 px simplification tolerance and a tighter potrace `opttolerance`.
+4. **Fidelity score**: the traced polygons are rasterised back at the working
+   resolution and compared with the cleaned ink mask - IoU, thin-feature recall
+   (the share of pixels an opening removes that the trace still covers) and a
+   hole-count ratio, combined as `0.6·IoU + 0.25·thin + 0.15·holes`. The score,
+   its parts and the parameters used land in `manifest.json` per piece.
+5. **`--fidelity best`** traces a small grid per piece (upscale 3/4 x turdsize
+   2/4 x curve tolerance 0.2/0.5) and keeps the best score under
+   `--triangle-budget` (20k triangles per piece by default). `fast` (the
+   default) traces once at 3x. The editor has the same setting.
+6. The ink PNG cutouts are rendered from the cleaned hi-res mask at 2x source
+   resolution (`png_scale` in the manifest), so they are crisp rather than a
+   blurry threshold of the raw crop.
+7. Pieces whose ink is mostly thin (more than 30% removed by a 2 px opening)
+   are extruded at 2.5% of their longest side instead of 3.5%, so hairlines do
+   not read as slabs. Holes get walls on both sides like any other ring.
+
+On the example sheets, "A Leap of Faith" goes from IoU 0.91 / 8 holes / a
+caption reduced to three dots, to IoU 0.97 / 12 holes / every letter of the
+caption; the cassette from IoU 0.81 to 0.90 with thin-feature recall 0.55 to
+0.83. `tests/test_fidelity.py` pins these.
+
 ## Tuning
 
 | flag | default | what it does |
@@ -160,8 +199,12 @@ scale and every bbox in source pixels.
 | `--margin F` | 0.015 | fraction of the short side ignored at the sheet edges (scanner shadows, card borders) |
 | `--threshold N` | 150 | grey level below which a pixel is ink |
 | `--smooth auto\|on\|off` | auto | halftone pre-blur; `auto` applies it only to pieces with raw speckle > `--smooth-speckle` (3.0) |
-| `--turdsize N` | 14 | potrace: ignore ink blobs smaller than this |
-| `--simplify PX` | 0.9 | polyline simplification tolerance |
+| `--fidelity fast\|best` | fast | `best` searches a small grid per piece and keeps the best fidelity score under the triangle budget |
+| `--upscale N` | 3 | working resolution per piece |
+| `--binarize adaptive\|global` | adaptive | edge-aware binarisation vs plain threshold |
+| `--triangle-budget N` | 20000 | `best` mode: prefer candidates under this many triangles |
+| `--turdsize N` | 4 | potrace: ignore blobs smaller than this many source px² |
+| `--simplify PX` | 0.5 | polyline simplification tolerance (source px) |
 | `--depth F` | 0.035 | extrusion depth as a fraction of the longest side (6%+ looks like a slab) |
 | `--scale F` | 0.001 | output units per pixel |
 | `--max-speckle F` | 8 | flag pieces above this speckle score |

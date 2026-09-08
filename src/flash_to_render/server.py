@@ -77,6 +77,7 @@ class RenderIn(BaseModel):
     smooth: str = "auto"
     threshold: int = 150
     depth: float = 0.035
+    fidelity: str = "fast"
 
 
 def _segment_options(d: DetectIn | RenderIn) -> SegmentOptions:
@@ -272,7 +273,7 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         jobs[job_id] = job
         options = PipelineOptions(
             segment=_segment_options(body),
-            trace=TraceOptions(threshold=body.threshold, smooth=body.smooth),
+            trace=TraceOptions(threshold=body.threshold, smooth=body.smooth, fidelity="best" if body.fidelity == "best" else "fast"),
             depth_frac=body.depth,
             debug=True,
         )
