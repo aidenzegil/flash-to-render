@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flash-to-render preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #b9b9b6; color: #222; font: 13px/1.4 system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; display: block; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; gap: 12px; align-items: center;
+         padding: 8px 12px; background: rgba(255,255,255,.7); backdrop-filter: blur(4px); }
+  #bar select { font: inherit; padding: 2px 6px; }
+  #bar .hint { opacity: .6; margin-left: auto; }
+  #status { position: fixed; bottom: 8px; left: 12px; opacity: .6; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="bar">
+  <strong id="title">flash-to-render</strong>
+  <label>piece <select id="pick"><option value="">all</option></select></label>
+  <label><input type="checkbox" id="spin"> spin</label>
+  <span class="hint">drag to orbit, wheel to zoom, right-drag to pan</span>
+</div>
+<div id="status"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xb9b9b6);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.001, 1000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666660, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(1, 2, 3); scene.add(key);
+const fill = new THREE.DirectionalLight(0xffffff, 0.6); fill.position.set(-2, -1, 1); scene.add(fill);
+
+const status = document.getElementById('status');
+const pick = document.getElementById('pick');
+const loader = new GLTFLoader();
+let current = null;
+
+function fit(object) {
+  const box = new THREE.Box3().setFromObject(object);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+  const dist = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.15;
+  camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix();
+  camera.position.copy(center).add(new THREE.Vector3(0.15, 0.1, 1).normalize().multiplyScalar(dist));
+  controls.target.copy(center); controls.update();
+}
+
+function show(file) {
+  status.textContent = 'loading ' + file;
+  loader.load(file, (gltf) => {
+    if (current) scene.remove(current);
+    current = gltf.scene;
+    scene.add(current);
+    fit(current);
+    let tris = 0;
+    current.traverse((o) => { if (o.isMesh && o.geometry.index) tris += o.geometry.index.count / 3; });
+    status.textContent = file + ' - ' + tris.toLocaleString() + ' triangles';
+  }, undefined, (err) => { status.textContent = 'failed to load ' + file + ': ' + err.message; });
+}
+
+fetch('manifest.json').then((r) => r.json()).then((m) => {
+  document.getElementById('title').textContent = m.source + ' (' + m.mode + ')';
+  for (const p of m.pieces) {
+    if (!p.files || !p.files.glb) continue;
+    const o = document.createElement('option');
+    o.value = p.files.glb;
+    o.textContent = p.id + (p.quality !== 'ok' ? ' (' + p.quality + ')' : '');
+    pick.appendChild(o);
+  }
+  show(m.scene || (m.pieces.find((p) => p.files && p.files.glb) || {}).files.glb);
+}).catch((e) => { status.textContent = 'no manifest.json: ' + e.message; });
+
+pick.addEventListener('change', () => show(pick.value || 'all.glb'));
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+const spin = document.getElementById('spin');
+renderer.setAnimationLoop(() => {
+  if (spin.checked && current) current.rotation.y += 0.006;
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
