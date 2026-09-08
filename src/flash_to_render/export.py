@@ -17,6 +17,7 @@ from .segment import Piece
 __all__ = [
     "cutout_rgba",
     "cutout_rgba_from_mask",
+    "cutout_rgba_tone",
     "write_cutout_png",
     "write_svg",
     "mesh_to_trimesh",
@@ -62,17 +63,51 @@ def cutout_rgba_from_mask(mask: np.ndarray, mask_scale: int, out_scale: int = 2)
     return rgba
 
 
+def cutout_rgba_tone(piece: Piece, out_scale: int = 2, paper_level: float = 250.0, ink_level: float = 40.0, unsharp: float = 0.5) -> np.ndarray:
+    """Alpha from the source grey itself, at ``out_scale`` x: shading prints exactly as drawn.
+
+    The crop is upscaled (bicubic), lightly unsharpened, mapped to alpha with
+    ``clamp((paper - grey) / (paper - ink))`` and masked to the region outline.
+    For crisp line art this is visually the binary cutout; for halftone it keeps the tone.
+    """
+    gray = piece.gray
+    region = piece.region
+    if out_scale > 1:
+        gray = cv2.resize(gray, None, fx=out_scale, fy=out_scale, interpolation=cv2.INTER_CUBIC)
+        region = cv2.resize(region.astype(np.uint8), None, fx=out_scale, fy=out_scale, interpolation=cv2.INTER_NEAREST) > 0
+    if unsharp > 0:
+        blur = cv2.GaussianBlur(gray, (0, 0), max(0.8, 0.5 * out_scale))
+        gray = cv2.addWeighted(gray, 1.0 + unsharp, blur, -unsharp, 0)
+    span = max(1.0, float(paper_level - ink_level))
+    alpha = np.clip((paper_level - gray.astype(np.float32)) / span, 0.0, 1.0)
+    alpha[~region] = 0.0
+    rgba = np.empty((*alpha.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = 255
+    rgba[..., 3] = np.round(alpha * 255).astype(np.uint8)
+    return rgba
+
+
 def write_cutout_png(
     piece: Piece,
     path: str | Path,
     mask: np.ndarray | None = None,
     mask_scale: int = 1,
     out_scale: int = 2,
+    stamp: str = "tone",
     **levels: float,
 ) -> Path:
-    """Write the ink cutout: from the cleaned hi-res ``mask`` when given (at ``out_scale`` x), else from the raw crop."""
+    """Write the ink cutout.
+
+    ``stamp="tone"`` (default) takes alpha from the source grey (:func:`cutout_rgba_tone`);
+    ``stamp="binary"`` uses the cleaned hi-res ``mask`` when given, else the raw crop.
+    """
     path = Path(path)
-    rgba = cutout_rgba_from_mask(mask, mask_scale, out_scale) if mask is not None else cutout_rgba(piece, **levels)
+    if stamp == "tone":
+        rgba = cutout_rgba_tone(piece, out_scale, **levels)
+    elif mask is not None:
+        rgba = cutout_rgba_from_mask(mask, mask_scale, out_scale)
+    else:
+        rgba = cutout_rgba(piece, **levels)
     Image.fromarray(rgba, "RGBA").save(path, optimize=True)
     return path
 
@@ -107,11 +142,21 @@ def mesh_to_trimesh(mesh: Mesh, color: Sequence[int] = INK_COLOR) -> trimesh.Tri
     return tm
 
 
-def write_glb(mesh: Mesh, path: str | Path, name: str | None = None, color: Sequence[int] = INK_COLOR) -> Path:
+def write_glb(
+    mesh: Mesh | Sequence[tuple[str, Mesh]],
+    path: str | Path,
+    name: str | None = None,
+    color: Sequence[int] = INK_COLOR,
+) -> Path:
+    """Write one mesh, or several named layers (relief), as one GLB with a node per layer."""
     path = Path(path)
-    tm = mesh_to_trimesh(mesh, color)
+    base = name or path.stem
+    layers = [(base, mesh)] if isinstance(mesh, Mesh) else [(f"{base}-{n}", m) for n, m in mesh]
     scene = trimesh.Scene()
-    scene.add_geometry(tm, node_name=name or path.stem, geom_name=name or path.stem)
+    for node, m in layers:
+        if m.is_empty:
+            continue
+        scene.add_geometry(mesh_to_trimesh(m, color), node_name=node, geom_name=node)
     path.write_bytes(scene.export(file_type="glb"))
     return path
 

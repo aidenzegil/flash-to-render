@@ -189,6 +189,36 @@ caption reduced to three dots, to IoU 0.97 / 12 holes / every letter of the
 caption; the cassette from IoU 0.81 to 0.90 with thin-feature recall 0.55 to
 0.83. `tests/test_fidelity.py` pins these.
 
+## Shaded and halftone work
+
+Grey is not one thing, so the tracer looks twice before deciding what to do
+with a piece that is speckly *and* grey (the old "halftone" gate):
+
+- **Grey line art** (faint outlines, pencil-weight strokes - most of the
+  shaded pieces on the anime sheet) is still line art. It gets the edge-aware
+  path with a lower adaptive C and a ~1.7 px gap-close so faded strokes rejoin
+  instead of breaking into confetti. Manifest: `tone_mode: "light"`. On the
+  anime sheet this takes the fan-and-cat piece from 210 traced outers to 46,
+  the flaming cat from 117 to 34, the flower cluster from 102 to 12.
+- **Halftone dot fields** are recognised by their hi-res adaptive mask
+  (hundreds of compact specks per unit of ink). Their grey is blurred over the
+  estimated dot spacing (median nearest-neighbour distance between specks,
+  fallback 2.5 px) into a coverage field, thresholded at 50% and opened/closed
+  at the dot spacing, so a stipple becomes the solid shape the artist meant
+  and hatched edges become soft outlines. Fidelity is scored against this
+  tone-resolved mask. Manifest: `tone_mode: "tone"`, `dot_spacing`.
+- **Relief** (`--relief on`, default): a dot-field piece is extruded as two
+  closed layers sharing the back plane - coverage >= 70% at full depth and
+  35-70% at 45% depth - written as two nodes of the piece's GLB, so shading
+  reads as relief. `--relief off` gives one full-depth layer.
+- **Stamps** (`--stamp tone`, default): the ink PNG's alpha comes from the
+  source grey itself (`clamp((paper - grey) / (paper - ink))` on the 2x
+  bicubic, lightly sharpened crop, masked to the region outline), so shading
+  prints exactly as drawn. `--stamp binary` uses the traced mask instead.
+
+Crisp black line art never touches any of this: its mask is byte-for-byte the
+plain edge-aware binarisation, which the tests check.
+
 ## Tuning
 
 | flag | default | what it does |
@@ -198,7 +228,9 @@ caption; the cassette from IoU 0.81 to 0.90 with thin-feature recall 0.55 to
 | `--pad N` | 6 | padding around each crop |
 | `--margin F` | 0.015 | fraction of the short side ignored at the sheet edges (scanner shadows, card borders) |
 | `--threshold N` | 150 | grey level below which a pixel is ink |
-| `--smooth auto\|on\|off` | auto | halftone pre-blur; `auto` applies it only to pieces with raw speckle > `--smooth-speckle` (3.0) |
+| `--smooth auto\|on\|off` | auto | `auto` routes grey pieces to the light-line or tone path (see above); `on` forces tone, `off` forces line |
+| `--relief on\|off` | on | two-layer relief for halftone pieces |
+| `--stamp tone\|binary` | tone | ink PNG alpha from the source grey or from the traced mask |
 | `--fidelity fast\|best` | fast | `best` searches a small grid per piece and keeps the best fidelity score under the triangle budget |
 | `--upscale N` | 3 | working resolution per piece |
 | `--binarize adaptive\|global` | adaptive | edge-aware binarisation vs plain threshold |

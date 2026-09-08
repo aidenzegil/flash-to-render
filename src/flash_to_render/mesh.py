@@ -135,12 +135,14 @@ def extrude(
     depth: float,
     center: tuple[float, float] | None = None,
     scale: float = 1.0,
+    z_offset: float = 0.0,
 ) -> Mesh:
     """Extrude nested polygons (image space, px) into a closed slab of thickness ``depth`` (px).
 
     ``center`` (px, image space) becomes the origin; ``scale`` multiplies every
     coordinate *before* it is stored, so quantising exporters never see values
-    that round to zero.
+    that round to zero. ``z_offset`` (px) shifts the slab along z (relief layers
+    share a back plane).
     """
     cleaned = _clean_polygons(polys)
     if not cleaned:
@@ -156,7 +158,7 @@ def extrude(
         out = np.empty((len(xy), 3), dtype=np.float64)
         out[:, 0] = (xy[:, 0] - cx) * scale
         out[:, 1] = -(xy[:, 1] - cy) * scale  # the one and only y flip
-        out[:, 2] = z * scale
+        out[:, 2] = (z + z_offset) * scale
         return out
 
     V: list[np.ndarray] = []

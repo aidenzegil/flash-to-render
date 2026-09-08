@@ -12,8 +12,11 @@ sharpens it and binarises it edge-aware (a global threshold for solid ink OR-ed
 with a Gaussian adaptive threshold that keeps thin strokes), and every
 pixel-based parameter (turdsize, simplification tolerance, close kernel, hole
 area) is scaled with it. Geometry comes back in source pixels. Genuinely
-halftoned pieces (speckle-gated) keep the blur + close treatment instead; line
-art is never blurred.
+halftoned pieces (gated on speckle *and* mid-grey) go through :func:`prepare_tone`
+instead: the grey is blurred over the estimated dot spacing into a coverage
+field, thresholded at 50% and opened/closed at the dot spacing, so a stipple
+field becomes the solid shape the artist meant; optionally split into a dark
+and a mid relief layer. Line art is never blurred.
 
 With ``fidelity="best"`` a small parameter grid is traced per piece and the
 candidate with the best :mod:`fidelity` score under the triangle budget wins.
@@ -59,6 +62,13 @@ __all__ = [
     "card_likeness",
     "is_cardlike",
     "estimate_triangles",
+    "Layer",
+    "route",
+    "prepare",
+    "prepare_tone",
+    "tone_field",
+    "dot_field_stats",
+    "estimate_dot_spacing",
     "FAST_GRID",
     "BEST_GRID",
 ]
@@ -115,12 +125,25 @@ class TraceOptions:
     smooth_grey: float = 0.6
     """... a mid-grey ratio above this to get the halftone treatment. Captions and hatching are speckly but
     black; shading is grey. See :attr:`Piece.grey_ratio`."""
-    smooth_blur: int = 5
-    """Gaussian kernel (source px) for the halftone treatment."""
-    smooth_close: int = 3
-    """Morphological close kernel (source px) for the halftone treatment."""
-    smooth_threshold_boost: int = 15
-    """Blurring lightens ink, so the threshold is raised by this much when smoothing."""
+    tone_coverage: float = 0.5
+    """Shaded pieces: local ink coverage at or above this is solid ink in the traced mask."""
+    tone_dark: float = 0.7
+    """Relief: coverage at or above this is the full-depth "dark" layer ..."""
+    tone_mid: float = 0.35
+    """... and coverage between ``tone_mid`` and ``tone_dark`` is the lower "mid" layer."""
+    relief: bool = True
+    """Shaded pieces: extrude dark and mid tone as two layers (see :class:`Layer`)."""
+    relief_depth: float = 0.45
+    """Depth of the mid layer relative to the piece depth."""
+    dot_spacing: float = 0.0
+    """Halftone dot spacing in source px (0 = estimate from the piece, fallback 2.5)."""
+    light_c: float = 6.0
+    """Light (grey) line art: adaptive-threshold C, lower than ``adaptive_c`` so faint strokes register."""
+    light_close: float = 1.7
+    """Light line art: gap-closing kernel in source px (faded strokes break into fragments)."""
+    dotty_speckle: float = 25.0
+    """A piece is a halftone *dot field* when its hi-res adaptive mask has this many components per 1000
+    source-px² of ink (with compact components); grey line art scores under ~10."""
     median: int = 0
     """Median filter (source px) applied to line-art masks before tracing (0 = off)."""
     turdsize: int = 4
@@ -152,11 +175,21 @@ BEST_GRID: tuple[dict[str, Any], ...] = tuple(
 
 
 @dataclass
+class Layer:
+    """One extrusion layer of a piece: polygons (source px) and its depth relative to the piece depth."""
+
+    name: str
+    polygons: list[PolygonWithHoles]
+    depth: float = 1.0
+
+
+@dataclass
 class TraceResult:
     polygons: list[PolygonWithHoles]
     svg_d: str
     ink: np.ndarray
-    """The cleaned mask that was actually traced (uint8, 255 = ink), at ``scale`` times source resolution."""
+    """The cleaned mask that was actually traced (uint8, 255 = ink), at ``scale`` times source resolution.
+    For shaded pieces this is the *tone-resolved* mask, which is also the fidelity reference."""
     scale: int
     smoothed: bool
     components: int
@@ -164,6 +197,12 @@ class TraceResult:
     fidelity: Fidelity | None = None
     params: dict[str, Any] = field(default_factory=dict)
     flipped_polarity: bool = False
+    tone_mode: str = "line"
+    """``line`` (edge-aware binarisation), ``light`` (grey line art: lower C + gap-close) or ``tone``
+    (halftone dot field resolved into solid regions)."""
+    dot_spacing: float = 0.0
+    layers: list[Layer] = field(default_factory=list)
+    """Extrusion layers; empty means a single full-depth layer of ``polygons``."""
 
     @property
     def outer_count(self) -> int:
@@ -208,34 +247,144 @@ def binarize(gray: np.ndarray, opts: TraceOptions, scale: int) -> np.ndarray:
     return (solid | (local & (src < opts.adaptive_max))).astype(np.uint8) * 255
 
 
-def prepare_ink(piece: Piece, options: TraceOptions | None = None) -> tuple[np.ndarray, bool]:
-    """Return ``(mask, smoothed)``: the uint8 ink mask to trace for ``piece`` at ``options.upscale`` x resolution.
+def estimate_dot_spacing(mask: np.ndarray, scale: int = 1, fallback: float = 2.5, max_speck_src: float = 60.0) -> float:
+    """Median nearest-neighbour distance between small ink specks, in *source* px: the halftone dot spacing.
 
-    Line art is upscaled, sharpened and binarised edge-aware. Speckly
-    (halftone / grey-shaded) pieces are instead upscaled, blurred, thresholded
-    and closed so shading collapses into solid regions instead of thousands of
-    dots. Either way ink outside the piece's region is removed.
+    ``mask`` may be at ``scale`` x source resolution (the hi-res adaptive mask separates dots best).
     """
+    n, _labels, stats, cents = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    small = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] < max_speck_src * scale * scale]
+    if len(small) < 12:
+        return fallback
+    pts = cents[small].astype(np.float64)
+    if len(pts) > 1500:
+        pts = pts[np.random.default_rng(0).choice(len(pts), 1500, replace=False)]
+    d = np.sqrt(((pts[:, None, :] - pts[None, :, :]) ** 2).sum(-1))
+    np.fill_diagonal(d, np.inf)
+    spacing = float(np.median(d.min(axis=1))) / scale
+    return float(min(8.0, max(1.5, spacing))) if np.isfinite(spacing) else fallback
+
+
+def dot_field_stats(mask: np.ndarray, scale: int) -> tuple[float, float, int]:
+    """``(speckle per 1000 source-px² of ink, median component elongation, component count)`` of a hi-res mask."""
+    n, _labels, stats, _c = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n < 2:
+        return 0.0, 1.0, 0
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    w, h = stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT]
+    elong = np.maximum(w, h) / np.maximum(1, np.minimum(w, h))
+    ink = float(areas.sum())
+    return (n - 1) / ink * 1000.0 * scale * scale, float(np.median(elong)), int(n - 1)
+
+
+def route(piece: Piece, opts: TraceOptions, adaptive_mask: np.ndarray | None = None) -> str:
+    """Which preprocessing a piece gets: ``line``, ``light`` (grey line art) or ``tone`` (halftone dot field).
+
+    A true dot field is recognised by its hi-res adaptive mask: hundreds of
+    compact specks per unit of ink (``dotty_speckle``). Otherwise the old gate
+    (speckle *and* mid-grey) separates crisp black line art (``line``) from
+    faint grey outlines (``light``), which fragment into far fewer, elongated
+    bits. ``smooth=on`` forces ``tone``, ``off`` forces ``line``.
+    """
+    if opts.smooth == "on":
+        return "tone"
+    if opts.smooth == "off":
+        return "line"
+    if piece.speckle > opts.smooth_speckle:  # crisp black line art scores well under this: never a dot field
+        scale = max(1, int(opts.upscale))
+        if adaptive_mask is None:
+            adaptive_mask = binarize(_upscale(piece.gray, scale), opts, scale)
+            adaptive_mask[~_region_at(piece, scale)] = 0
+        spk, elong, n = dot_field_stats(adaptive_mask, scale)
+        if spk >= opts.dotty_speckle and elong < 1.3 and n >= 30:
+            return "tone"
+    if piece.speckle > opts.smooth_speckle and piece.grey_ratio > opts.smooth_grey:
+        return "light"
+    return "line"
+
+
+def is_shaded(piece: Piece, opts: TraceOptions) -> bool:
+    """True when the piece is a halftone dot field (the ``tone`` route)."""
+    return route(piece, opts) == "tone"
+
+
+def _region_at(piece: Piece, scale: int) -> np.ndarray:
+    return piece.region if scale == 1 else _upscale(piece.region.astype(np.uint8), scale, cv2.INTER_NEAREST) > 0
+
+
+def prepare_ink(piece: Piece, options: TraceOptions | None = None) -> tuple[np.ndarray, bool]:
+    """Return ``(mask, shaded)``: the uint8 ink mask to trace for ``piece`` at ``options.upscale`` x resolution.
+
+    Line art is upscaled, sharpened and binarised edge-aware; grey line art
+    additionally gets a lower adaptive C and a small gap-close; dot fields go
+    through :func:`prepare_tone`. ``shaded`` is True only for the tone route.
+    See :func:`prepare` for the route as well.
+    """
+    mask, r, _spacing = prepare(piece, options)
+    return mask, r == "tone"
+
+
+def prepare(piece: Piece, options: TraceOptions | None = None) -> tuple[np.ndarray, str, float]:
+    """``(mask, route, dot_spacing)`` for a piece; the mask is at ``options.upscale`` x resolution."""
     opts = options or TraceOptions()
     scale = max(1, int(opts.upscale))
+    region = _region_at(piece, scale)
     gray = _upscale(piece.gray, scale)
-    want = opts.smooth == "on" or (
-        opts.smooth == "auto" and piece.speckle > opts.smooth_speckle and piece.grey_ratio > opts.smooth_grey
-    )
-    if want:
-        mask = ink_mask(
-            gray,
-            threshold=min(255, opts.threshold + opts.smooth_threshold_boost),
-            blur=_odd(opts.smooth_blur * scale),
-            close=_odd(opts.smooth_close * scale),
-        )
-    else:
-        mask = binarize(gray, opts, scale)
+    mask = binarize(gray, opts, scale)
+    mask[~region] = 0
+    r = route(piece, opts, mask)
+    if r == "line":
         if opts.median and opts.median > 1:
             mask = cv2.medianBlur(mask, _odd(opts.median * scale))
-    region = piece.region if scale == 1 else _upscale(piece.region.astype(np.uint8), scale, cv2.INTER_NEAREST) > 0
-    mask[~region] = 0
-    return mask, want
+        return mask, r, 0.0
+    if r == "light":
+        mask = binarize(gray, replace(opts, adaptive_c=opts.light_c), scale)
+        k = _odd(opts.light_close * scale)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        mask[~region] = 0
+        return mask, r, 0.0
+    masks, spacing = prepare_tone(piece, opts, adaptive_mask=mask)
+    return masks["trace"], "tone", spacing
+
+
+def tone_field(gray: np.ndarray, spacing_px: float, paper: float = 245.0, ink: float = 30.0) -> np.ndarray:
+    """Local ink coverage (0..1) of an (upscaled) greyscale crop, blurred over the halftone dot spacing.
+
+    A stipple field becomes a smooth coverage map: solid black is ~1, 50% dots
+    ~0.5, paper 0. ``spacing_px`` is in the crop's own pixels.
+    """
+    cov = np.clip((paper - gray.astype(np.float32)) / max(1.0, paper - ink), 0.0, 1.0)
+    sigma = max(0.8, 0.8 * spacing_px)
+    return cv2.GaussianBlur(cov, (0, 0), sigma)
+
+
+def _tone_mask(field: np.ndarray, level: float, k: int) -> np.ndarray:
+    m = (field >= level).astype(np.uint8) * 255
+    el = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, el)
+    return cv2.morphologyEx(m, cv2.MORPH_CLOSE, el)
+
+
+def prepare_tone(piece: Piece, opts: TraceOptions, adaptive_mask: np.ndarray | None = None) -> tuple[dict[str, np.ndarray], float]:
+    """Tone-resolved masks for a dot-field piece at ``opts.upscale`` x: ``trace`` (coverage >= tone_coverage),
+    ``dark`` and ``mid`` (relief layers). Returns ``(masks, dot_spacing)`` with the spacing in source px."""
+    scale = max(1, int(opts.upscale))
+    region = _region_at(piece, scale)
+    gray = _upscale(piece.gray, scale)
+    if adaptive_mask is None:
+        adaptive_mask = binarize(gray, opts, scale)
+        adaptive_mask[~region] = 0
+    spacing = opts.dot_spacing or estimate_dot_spacing(adaptive_mask, scale)
+    field = tone_field(gray, spacing * scale, paper=245.0, ink=float(min(opts.threshold, 30)))
+    k = _odd(spacing * scale)
+    masks = {
+        "trace": _tone_mask(field, opts.tone_coverage, k),
+        "dark": _tone_mask(field, opts.tone_dark, k),
+        "mid": _tone_mask(field, opts.tone_mid, k),
+    }
+    for m in masks.values():
+        m[~region] = 0
+    return masks, spacing
 
 
 # --------------------------------------------------------------------------- #
@@ -443,21 +592,31 @@ def trace_ink(
 def _trace_once(piece: Piece, opts: TraceOptions, params: dict[str, Any]) -> TraceResult:
     o = replace(opts, **params)
     scale = max(1, int(o.upscale))
-    mask, smoothed = prepare_ink(piece, o)
+    mask, r, spacing = prepare(piece, o)
+    shaded = r == "tone"
+    layers: list[Layer] = []
     comps, speck = speckle_score(mask)
     path, polys, flipped = trace_ink(mask, o, scale)
-    fid = measure(mask, polys, scale, {"upscale": scale, "turdsize": o.turdsize, "opttolerance": o.opttolerance, "binarize": o.binarize, "adaptive_block": o.adaptive_block})
+    if shaded and o.relief:
+        masks, _ = prepare_tone(piece, o)
+        dark = trace_ink(masks["dark"], o, scale)[1]
+        mid = trace_ink(masks["mid"], o, scale)[1]
+        layers = [Layer("mid", mid, o.relief_depth), Layer("dark", dark, 1.0)]
+    fid = measure(mask, polys, scale, {"upscale": scale, "turdsize": o.turdsize, "opttolerance": o.opttolerance, "binarize": r, "adaptive_block": o.adaptive_block})
     return TraceResult(
         polygons=polys,
         svg_d=path_to_svg_d(path, 1.0 / scale),
         ink=mask,
         scale=scale,
-        smoothed=smoothed,
+        smoothed=shaded,
         components=comps,
         speckle=speck,
         fidelity=fid,
         params=fid.params,
         flipped_polarity=flipped,
+        tone_mode=r,
+        dot_spacing=spacing,
+        layers=layers,
     )
 
 

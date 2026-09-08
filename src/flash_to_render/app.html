@@ -76,6 +76,7 @@
       <label>min area <input type="number" id="optMinArea" min="0" step="50" placeholder="auto"></label>
       <label>smoothing <select id="optSmooth"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select></label>
       <label>fidelity <select id="optFidelity"><option value="fast">fast</option><option value="best">best</option></select></label>
+      <label><input type="checkbox" id="optRelief" checked> relief</label>
     </div>
     <button id="save" disabled>Save boxes</button>
     <a id="export" hidden download>Export regions</a>
@@ -206,7 +207,7 @@ $('upload').addEventListener('submit', async (ev) => {
 function settings() {
   const k = parseInt($('optKernel').value, 10);
   const a = parseInt($('optMinArea').value, 10);
-  return { merge_kernel: Number.isFinite(k) ? k : null, min_area: Number.isFinite(a) ? a : null, smooth: $('optSmooth').value, fidelity: $('optFidelity').value, mode: 'auto' };
+  return { merge_kernel: Number.isFinite(k) ? k : null, min_area: Number.isFinite(a) ? a : null, smooth: $('optSmooth').value, fidelity: $('optFidelity').value, relief: $('optRelief').checked, mode: 'auto' };
 }
 function applySettings(o) {
   if (!o) return;
@@ -214,6 +215,7 @@ function applySettings(o) {
   $('optMinArea').value = o.min_area ?? '';
   $('optSmooth').value = o.smooth || 'auto';
   $('optFidelity').value = o.fidelity || 'fast';
+  $('optRelief').checked = o.relief !== false;
 }
 function setTool(t) {
   state.tool = t;
@@ -518,8 +520,8 @@ async function poll() {
   if (job.status === 'done') {
     $('viewer').src = job.preview; $('viewer').hidden = false;
     const a = document.createElement('a'); a.href = job.download; a.textContent = 'Download outputs (.zip)'; $('download').replaceChildren(a);
-    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${(q.kind || 'rect').padEnd(8)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  fidelity ${q.fidelity ? q.fidelity.score.toFixed(3) : '  -  '}  holes ${String(q.holes).padStart(3)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
-    $('pieces').textContent = ['id                     kind     size        triangles  fidelity  holes  quality', ...rows].join('\n');
+    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${(q.kind || 'rect').padEnd(8)} ${(q.tone_mode || 'line').padEnd(5)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  fidelity ${q.fidelity ? q.fidelity.score.toFixed(3) : '  -  '}  holes ${String(q.holes).padStart(3)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
+    $('pieces').textContent = ['id                     kind     mode  size        triangles  fidelity  holes  quality', ...rows].join('\n');
     $('render').disabled = false;
     say('render done');
     loadLibrary();

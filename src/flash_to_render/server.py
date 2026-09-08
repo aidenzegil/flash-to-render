@@ -78,6 +78,8 @@ class RenderIn(BaseModel):
     threshold: int = 150
     depth: float = 0.035
     fidelity: str = "fast"
+    relief: bool = True
+    stamp: str = "tone"
 
 
 def _segment_options(d: DetectIn | RenderIn) -> SegmentOptions:
@@ -273,8 +275,9 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         jobs[job_id] = job
         options = PipelineOptions(
             segment=_segment_options(body),
-            trace=TraceOptions(threshold=body.threshold, smooth=body.smooth, fidelity="best" if body.fidelity == "best" else "fast"),
+            trace=TraceOptions(threshold=body.threshold, smooth=body.smooth, fidelity="best" if body.fidelity == "best" else "fast", relief=body.relief),
             depth_frac=body.depth,
+            stamp="binary" if body.stamp == "binary" else "tone",
             debug=True,
         )
 

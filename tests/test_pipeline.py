@@ -134,3 +134,27 @@ def test_cli_convert_and_preview_arguments(tmp_path, capsys):
     assert (out / "manifest.json").exists() and not list(out.glob("*.glb"))
     assert main(["preview", str(tmp_path / "nowhere")]) == 2
     assert main([str(tmp_path / "missing.png")]) == 2
+
+
+@pytest.mark.parametrize("name", ["anime", "spiderverse", "objects"])
+def test_user_regions_render_nothing_empty_unless_truly_blank(name):
+    """The hand-edited seed regions: every region with ink inside its outline yields a non-empty piece."""
+    from flash_to_render.segment import Region, crop_pieces, ink_mask, load_gray
+
+    entry = {"anime": "payday-anime", "spiderverse": "payday-spider-verse", "objects": "payday-objects"}[name]
+    path = FIXTURES / f"{entry}.regions.json"
+    if not path.exists():
+        pytest.skip("no shipped regions for this sheet")
+    regions = [Region.from_dict(r) for r in json.loads(path.read_text())["regions"]]
+    gray = load_gray(FIXTURES / f"{name}.webp")
+    ink = ink_mask(gray)
+    pieces = crop_pieces(gray, regions)
+    for reg, piece in zip(regions, pieces):
+        box = reg.bbox().clamp(gray.shape[1], gray.shape[0])
+        inside = int(ink[box.y : box.y + box.h, box.x : box.x + box.w][reg.mask(box)].sum() // 255)
+        if inside > 50:
+            assert piece.ink_area > 0, (name, piece.id, inside)
+        # the two touching Hashira figures on the anime sheet both get their own side of the border
+    if name == "anime":
+        assert pieces[37].ink_area > 3000 and pieces[26].ink_area > 3000
+        assert pieces[37].ink_area + pieces[26].ink_area >= 0.95 * (10927 + 5000)

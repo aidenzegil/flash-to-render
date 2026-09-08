@@ -136,5 +136,21 @@ def test_lasso_hugging_a_design_beats_the_auto_box_covering_it():
     # an octagon hugging the square: its dilated component pokes out of the octagon at the corners
     octo = Region([(95, 130), (130, 95), (170, 95), (205, 130), (205, 170), (170, 205), (130, 205), (95, 170)], "polygon", "lasso")
     a, b = crop_pieces(sheet, [box, octo])
-    assert a.ink_area == 0  # the auto box is left empty, not duplicated
     assert 0.8 * 100 * 100 < b.ink_area < 100 * 100  # the lasso keeps the square minus the corners it cut
+    assert a.ink_area == 100 * 100 - b.ink_area  # the box is left only the corners outside the lasso
+    assert a.ink_area < 0.2 * 100 * 100
+
+
+def test_touching_designs_are_split_along_the_box_border():
+    """Two designs whose ink touches (one connected component) under two adjacent boxes: both render."""
+    sheet = _sheet([(100, 100, 100, 200), (200, 150, 120, 100)], size=(400, 400))  # the right block touches the left one
+    left = Region.rect(90, 90, 110, 220, "left")  # x 90..200
+    right = Region.rect(200, 140, 130, 120, "right")  # x 200..330
+    a, b = crop_pieces(sheet, [left, right])
+    assert a.ink_area == 100 * 200 and b.ink_area == 120 * 100
+    assert a.ink[:, -1].sum() > 0 and b.ink[:, 0].sum() > 0  # ink runs right up to the shared border on both sides
+    # overlapping boxes: the smaller one owns the overlap
+    wide = Region.rect(90, 90, 240, 220, "wide")
+    small = Region.rect(200, 140, 130, 120, "small")
+    w, s = crop_pieces(sheet, [wide, small])
+    assert s.ink_area == 120 * 100 and w.ink_area == 100 * 200

@@ -33,6 +33,7 @@ __all__ = [
     "detect",
     "detect_boxes",
     "crop_pieces",
+    "owner_map",
     "piece_id",
     "slugify",
     "load_gray",
@@ -377,57 +378,45 @@ def _ink_box(gray: np.ndarray, threshold: int, pad: int) -> Box:
     return Box(x0, y0, x1 - x0, y1 - y0)
 
 
+def owner_map(regions: Sequence[Region], boxes: Sequence[Box], masks: Sequence[np.ndarray], shape: tuple[int, int]) -> np.ndarray:
+    """Which region owns each pixel of the sheet (``index + 1``; 0 = nobody).
+
+    Regions are painted largest first, so where outlines overlap the *smaller*
+    region wins: a design tucked inside a neighbour's bbox goes to its own box,
+    a lasso beats the auto box it sits inside, and a component that spans two
+    boxes is cut exactly along their border.
+    """
+    owner = np.zeros(shape, dtype=np.int32)
+    order = sorted(range(len(regions)), key=lambda i: -int(masks[i].sum()))
+    for i in order:
+        b = boxes[i]
+        view = owner[b.y : b.y + b.h, b.x : b.x + b.w]
+        view[masks[i]] = i + 1
+    return owner
+
+
 def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: SegmentOptions | None = None) -> list[Piece]:
     """Cut a :class:`Piece` out of the sheet for every region (a :class:`Box` or a :class:`Region`).
 
-    A polygon region is cropped to its bounding box and everything outside the
-    polygon is set to paper before anything else happens, so ink from a
-    neighbouring design inside the bbox is excluded.
-
-    Which of the remaining ink belongs to the region? Every connected component
-    of the dilated ink is owned by the *smallest* region that holds at least
-    half of it, so a design tucked inside a neighbour's bbox goes to its own
-    box and a lasso beats the auto box it overlaps. When no region holds half
-    of a component, the user is splitting a merged design and every region
-    keeps the pixels inside it. Anything else is a neighbour bleeding in and
-    is masked.
+    Every region gets exactly the ink inside its own outline; a polygon is
+    cropped to its bounding box and everything outside the outline is paper.
+    Where outlines overlap, the smaller region owns the overlapping pixels
+    (see :func:`owner_map`), so two adjacent boxes over touching designs each
+    render their own side of the border and neither comes out empty.
     """
     opts = (options or SegmentOptions()).resolved(gray.shape)
     full_h, full_w = gray.shape
-    ink, labels, stats = _ink_components(gray, opts)
-    n_labels = len(stats)
-    comp_px = np.bincount(labels.ravel(), minlength=n_labels).astype(np.float64)
+    ink = ink_mask(gray, threshold=opts.threshold)
 
     regs = [r if isinstance(r, Region) else Region.from_box(r) for r in regions]
     boxes = [r.bbox().clamp(full_w, full_h) for r in regs]
     masks = [r.mask(b) for r, b in zip(regs, boxes)]
-    inside = np.zeros((len(boxes), n_labels), dtype=np.float64)
-    for i, (box, mask) in enumerate(zip(boxes, masks)):
-        sub = labels[box.y : box.y + box.h, box.x : box.x + box.w]
-        inside[i] = np.bincount(sub[mask].ravel(), minlength=n_labels)
-    frac = inside / np.maximum(comp_px, 1)[None, :]
-
-    claims: list[set[int]] = [set() for _ in boxes]
-    areas = np.array([m.sum() for m in masks]) if boxes else np.zeros(0)
-    for lab in range(1, n_labels):
-        if comp_px[lab] == 0 or not inside[:, lab].any():
-            continue
-        candidates = np.nonzero(frac[:, lab] >= 0.5)[0]
-        if len(candidates):
-            # the smallest region holding at least half of the component owns it: a design tucked
-            # inside a neighbour's bbox goes to its own box, a lasso beats the auto box it overlaps
-            owner = int(candidates[np.argmin(areas[candidates])])
-            claims[owner].add(lab)
-        else:
-            for i in np.nonzero(inside[:, lab] > 0)[0]:
-                claims[int(i)].add(lab)
+    owner = owner_map(regs, boxes, masks, gray.shape)
 
     pieces: list[Piece] = []
-    for idx, (reg, box, mask) in enumerate(zip(regs, boxes, masks)):
+    for idx, (reg, box) in enumerate(zip(regs, boxes)):
         x0, y0, x1, y1 = box.x, box.y, box.x + box.w, box.y + box.h
-        sub_lab = labels[y0:y1, x0:x1]
-        keep = sorted(claims[idx])
-        region = (np.isin(sub_lab, keep) if keep else np.zeros(sub_lab.shape, dtype=bool)) & mask
+        region = owner[y0:y1, x0:x1] == idx + 1
         crop_ink = ink[y0:y1, x0:x1].copy()
         crop_ink[~region] = 0
         crop_gray = gray[y0:y1, x0:x1].copy()

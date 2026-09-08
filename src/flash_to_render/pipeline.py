@@ -40,6 +40,8 @@ class PipelineOptions:
     fine_thin_fraction: float = 0.3
     png_scale: int = 2
     """Resolution of the ink cutout PNGs relative to the source crop."""
+    stamp: str = "tone"
+    """Ink cutout alpha: ``tone`` from the source grey (shading preserved), ``binary`` from the traced mask."""
     scale: float = 0.001
     """Output units per source pixel. glTF is in metres, so the default makes 1 px = 1 mm."""
     max_speckle: float = 8.0
@@ -65,6 +67,8 @@ class PieceResult:
     warnings: list[str] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)
     png_scale: int = 1
+    layer_meshes: list[tuple[str, Mesh]] = field(default_factory=list)
+    """Relief layers (name, mesh); empty for a single-layer piece."""
 
     @property
     def triangles(self) -> int:
@@ -94,6 +98,10 @@ class PieceResult:
             "triangles": self.triangles,
             "depth_px": round(self.depth_px, 3),
             "png_scale": self.png_scale,
+            "tone_mode": t.tone_mode if t else "line",
+            "dot_spacing": round(t.dot_spacing, 2) if t else 0.0,
+            "relief": bool(self.layer_meshes),
+            "layers": [{"name": n, "triangles": m.triangle_count, "depth_px": round(m.depth / max(1e-9, self.mesh.depth) * self.depth_px, 3) if self.mesh and self.mesh.depth else 0} for n, m in self.layer_meshes],
             "fidelity": t.fidelity.to_dict() if t and t.fidelity else None,
             "trace_params": t.params if t else {},
             "quality": self.quality,
@@ -127,8 +135,10 @@ def _classify(piece: Piece, trace: TraceResult, mesh: Mesh, options: PipelineOpt
     warnings: list[str] = []
     if trace.flipped_polarity:
         warnings.append("polarity flipped by guard")
-    if trace.smoothed:
-        warnings.append(f"halftone smoothing applied (raw speckle {piece.speckle:.1f})")
+    if trace.tone_mode == "tone":
+        warnings.append(f"halftone: tone-resolved at dot spacing {trace.dot_spacing:.1f}px (raw speckle {piece.speckle:.1f})")
+    elif trace.tone_mode == "light":
+        warnings.append(f"grey line art: low-C adaptive threshold + gap close (raw speckle {piece.speckle:.1f})")
     if mesh.is_empty or not trace.polygons:
         return "empty", warnings + ["no polygons after tracing"]
     if trace.speckle > options.max_speckle:
@@ -145,9 +155,23 @@ def process_pieces(pieces: list[Piece], options: PipelineOptions, progress: Prog
         trace = trace_piece(piece, options.trace)
         fine = trace.fidelity is not None and trace.fidelity.thin_fraction > options.fine_thin_fraction
         depth_px = depth_for(piece.longest_side, options.fine_depth_frac if fine else options.depth_frac)
-        mesh = extrude(trace.polygons, depth_px, center=(piece.w / 2, piece.h / 2), scale=options.scale)
+        center = (piece.w / 2, piece.h / 2)
+        layer_meshes: list[tuple[str, Mesh]] = []
+        if trace.layers:
+            # relief: every layer shares the back plane at -depth/2
+            for layer in trace.layers:
+                d = depth_px * layer.depth
+                m = extrude(layer.polygons, d, center=center, scale=options.scale, z_offset=-(depth_px - d) / 2)
+                if not m.is_empty:
+                    layer_meshes.append((layer.name, m))
+        if layer_meshes:
+            mesh = layer_meshes[0][1]
+            for _n, m in layer_meshes[1:]:
+                mesh = mesh.concatenate(m)
+        else:
+            mesh = extrude(trace.polygons, depth_px, center=center, scale=options.scale)
         quality, warnings = _classify(piece, trace, mesh, options)
-        results.append(PieceResult(piece=piece, trace=trace, mesh=mesh, depth_px=depth_px, quality=quality, warnings=warnings))
+        results.append(PieceResult(piece=piece, trace=trace, mesh=mesh, depth_px=depth_px, quality=quality, warnings=warnings, layer_meshes=layer_meshes))
         if progress:
             progress(i + 1, len(pieces), piece.id)
     return results
@@ -216,14 +240,17 @@ def run(
         if options.write_png:
             if r.trace is not None:
                 r.png_scale = options.png_scale
-                r.files["png"] = write_cutout_png(p, out_dir / f"{p.id}.png", mask=r.trace.ink, mask_scale=r.trace.scale, out_scale=options.png_scale).name
+                r.files["png"] = write_cutout_png(
+                    p, out_dir / f"{p.id}.png", mask=r.trace.ink, mask_scale=r.trace.scale, out_scale=options.png_scale,
+                    stamp=options.stamp, paper_level=paper, ink_level=ink,
+                ).name
             else:
                 r.png_scale = 1
                 r.files["png"] = write_cutout_png(p, out_dir / f"{p.id}.png", paper_level=paper, ink_level=ink).name
         if r.trace and options.write_svg:
             r.files["svg"] = write_svg(out_dir / f"{p.id}.svg", r.trace.svg_d, p.w, p.h).name
         if r.mesh is not None and not r.mesh.is_empty and options.write_glb:
-            r.files["glb"] = write_glb(r.mesh, out_dir / f"{p.id}.glb", name=p.id).name
+            r.files["glb"] = write_glb(r.layer_meshes or r.mesh, out_dir / f"{p.id}.glb", name=p.id).name
             cx = (p.x + p.w / 2) - sheet_w / 2
             cy = (p.y + p.h / 2) - sheet_h / 2
             scene_entries.append((p.id, r.mesh, (cx * options.scale, -cy * options.scale, 0.0)))
@@ -241,6 +268,8 @@ def run(
         "scale": options.scale,
         "depth_frac": options.depth_frac,
         "fidelity_mode": options.trace.fidelity,
+        "stamp": options.stamp,
+        "relief": options.trace.relief,
         "scene": scene_path.name if scene_path else None,
         "options": {"segment": asdict(options.segment.resolved(gray.shape)), "trace": asdict(options.trace)},
         "pieces": [r.to_manifest() for r in results],

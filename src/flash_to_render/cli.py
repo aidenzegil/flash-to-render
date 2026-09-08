@@ -52,7 +52,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--upscale", type=int, default=3, help="work at this multiple of the source resolution per piece (default 3)")
     tr.add_argument("--binarize", choices=("adaptive", "global"), default="adaptive", help="adaptive keeps 1-2 px lines (default)")
     tr.add_argument("--triangle-budget", type=int, default=20000, help="best mode: prefer candidates under this many triangles per piece")
-    tr.add_argument("--smooth", choices=("auto", "on", "off"), default="auto", help="halftone pre-blur: auto = only speckly pieces (default)")
+    tr.add_argument("--smooth", choices=("auto", "on", "off"), default="auto", help="tone-resolve shaded pieces: auto = speckly and grey pieces only (default)")
+    tr.add_argument("--relief", choices=("on", "off"), default="on", help="shaded pieces: extrude dark and mid tone as two layers (default on)")
+    tr.add_argument("--stamp", choices=("tone", "binary"), default="tone", help="ink PNG alpha from the source grey (tone, default) or the traced mask (binary)")
     tr.add_argument("--smooth-speckle", type=float, default=3.0, help="auto mode: smooth pieces whose raw speckle exceeds this (default 3.0)")
     tr.add_argument("--turdsize", type=int, default=4, help="potrace: ignore blobs smaller than this many source px (default 4)")
     tr.add_argument("--simplify", type=float, default=0.5, help="polyline simplification tolerance in source px (default 0.5)")
@@ -110,7 +112,9 @@ def _options_from_args(a: argparse.Namespace) -> PipelineOptions:
             upscale=a.upscale,
             binarize=a.binarize,
             triangle_budget=a.triangle_budget,
+            relief=a.relief == "on",
         ),
+        stamp=a.stamp,
         depth_frac=a.depth,
         scale=a.scale,
         max_speckle=a.max_speckle,

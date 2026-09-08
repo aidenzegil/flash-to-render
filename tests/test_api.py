@@ -57,16 +57,13 @@ def test_library_lists_the_seeded_sheets(client):
 @pytest.mark.parametrize("entry_id", list(SEED_SHEET))
 def test_detect_returns_boxes_within_pipeline_tolerance(client, entry_id):
     expected, tol = EXPECTED[SEED_SHEET[entry_id]]
-    first = client.get(f"/api/library/{entry_id}/boxes").json()  # lazily detected, or shipped with the seed
+    first = client.get(f"/api/library/{entry_id}/boxes").json()  # the hand-edited regions shipped with the repo
     assert len(first["regions"]) == len(first["boxes"]) and all(r["id"] for r in first["regions"])
-    if entry_id == "payday-spider-verse":
-        assert first["mode"] == "boxes" and len(first["regions"]) == 19  # hand-edited regions ship with the repo
-    else:
-        assert first["mode"] == "sheet"
-        assert abs(len(first["boxes"]) - expected) <= tol
-        assert all(r["kind"] == "rect" and len(r["points"]) == 4 for r in first["regions"])
+    shipped = {"payday-spider-verse": 19, "payday-anime": 41, "payday-objects": 16}[entry_id]
+    assert first["mode"] == "boxes" and len(first["regions"]) == shipped
     again = client.post(f"/api/library/{entry_id}/detect", json={"mode": "sheet"}).json()
     assert abs(len(again["boxes"]) - expected) <= tol
+    assert all(r["kind"] == "rect" and len(r["points"]) == 4 and r["id"] for r in again["regions"])
     for b in again["boxes"]:
         assert 0 <= b["x"] < first["width"] and 0 <= b["y"] < first["height"] and b["w"] > 0 and b["h"] > 0
     # a bigger kernel merges more
@@ -216,7 +213,7 @@ def test_seeding_is_idempotent_and_spider_verse_ships_with_regions(tmp_path):
     assert sv.mode == "boxes" and len(sv.regions) == 19
     assert {r["kind"] for r in sv.regions} == {"rect", "polygon"}
     assert all(r["id"] for r in sv.regions)
-    assert lib.get("payday-anime").regions is None  # no shipped regions: detected lazily
+    assert len(lib.get("payday-anime").regions) == 41  # the anime regions ship too
 
     # hand-edit, then seed again (a server restart): nothing is rewritten
     sv.regions = sv.regions[:3]
