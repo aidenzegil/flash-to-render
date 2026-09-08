@@ -374,11 +374,12 @@ def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: Segm
     neighbouring design inside the bbox is excluded.
 
     Which of the remaining ink belongs to the region? Every connected component
-    of the dilated ink is assigned to the region that holds the largest share
-    of it (the smaller region wins a tie, so a design tucked inside a
-    neighbour's bbox is not duplicated). When no region holds at least half of
-    a component, the user is splitting a merged design and every region keeps
-    the pixels inside it. Anything else is a neighbour bleeding in and is masked.
+    of the dilated ink is owned by the *smallest* region that holds at least
+    half of it, so a design tucked inside a neighbour's bbox goes to its own
+    box and a lasso beats the auto box it overlaps. When no region holds half
+    of a component, the user is splitting a merged design and every region
+    keeps the pixels inside it. Anything else is a neighbour bleeding in and
+    is masked.
     """
     opts = (options or SegmentOptions()).resolved(gray.shape)
     full_h, full_w = gray.shape
@@ -400,9 +401,10 @@ def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: Segm
     for lab in range(1, n_labels):
         if comp_px[lab] == 0 or not inside[:, lab].any():
             continue
-        best = frac[:, lab].max()
-        if best >= 0.5:
-            candidates = np.nonzero(frac[:, lab] >= best - 1e-9)[0]
+        candidates = np.nonzero(frac[:, lab] >= 0.5)[0]
+        if len(candidates):
+            # the smallest region holding at least half of the component owns it: a design tucked
+            # inside a neighbour's bbox goes to its own box, a lasso beats the auto box it overlaps
             owner = int(candidates[np.argmin(areas[candidates])])
             claims[owner].add(lab)
         else:

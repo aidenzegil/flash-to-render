@@ -127,3 +127,14 @@ def test_polygon_region_excludes_neighbour_inside_its_bbox():
     legacy = Region.from_dict({"x": 1, "y": 2, "w": 3, "h": 4, "name": "n"})
     assert legacy.kind == "rect" and legacy.name == "n"
     assert legacy.bbox().to_dict() == {"x": 1, "y": 2, "w": 3, "h": 4, "name": "n"}
+
+
+def test_lasso_hugging_a_design_beats_the_auto_box_covering_it():
+    """A polygon drawn around a design that an auto box also contains gets the ink; the box is left empty."""
+    sheet = _sheet([(100, 100, 100, 100)], size=(300, 300))
+    box = Region.rect(80, 80, 140, 140, "auto box")
+    # an octagon hugging the square: its dilated component pokes out of the octagon at the corners
+    octo = Region([(95, 130), (130, 95), (170, 95), (205, 130), (205, 170), (170, 205), (130, 205), (95, 170)], "polygon", "lasso")
+    a, b = crop_pieces(sheet, [box, octo])
+    assert a.ink_area == 0  # the auto box is left empty, not duplicated
+    assert 0.8 * 100 * 100 < b.ink_area < 100 * 100  # the lasso keeps the square minus the corners it cut
