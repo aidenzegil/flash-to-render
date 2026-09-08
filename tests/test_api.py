@@ -12,7 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from flash_to_render.server import SEEDS, create_app
+from flash_to_render.library import SEEDS, Library, read_regions_file
+from flash_to_render.server import create_app
 
 from conftest import FIXTURES
 from test_pipeline import EXPECTED
@@ -56,13 +57,16 @@ def test_library_lists_the_seeded_sheets(client):
 @pytest.mark.parametrize("entry_id", list(SEED_SHEET))
 def test_detect_returns_boxes_within_pipeline_tolerance(client, entry_id):
     expected, tol = EXPECTED[SEED_SHEET[entry_id]]
-    first = client.get(f"/api/library/{entry_id}/boxes").json()  # lazily detected and persisted
-    assert first["mode"] == "sheet"
-    assert abs(len(first["boxes"]) - expected) <= tol
-    assert len(first["regions"]) == len(first["boxes"])
-    assert all(r["kind"] == "rect" and len(r["points"]) == 4 and r["id"] for r in first["regions"])
+    first = client.get(f"/api/library/{entry_id}/boxes").json()  # lazily detected, or shipped with the seed
+    assert len(first["regions"]) == len(first["boxes"]) and all(r["id"] for r in first["regions"])
+    if entry_id == "payday-spider-verse":
+        assert first["mode"] == "boxes" and len(first["regions"]) == 19  # hand-edited regions ship with the repo
+    else:
+        assert first["mode"] == "sheet"
+        assert abs(len(first["boxes"]) - expected) <= tol
+        assert all(r["kind"] == "rect" and len(r["points"]) == 4 for r in first["regions"])
     again = client.post(f"/api/library/{entry_id}/detect", json={"mode": "sheet"}).json()
-    assert len(again["boxes"]) == len(first["boxes"])
+    assert abs(len(again["boxes"]) - expected) <= tol
     for b in again["boxes"]:
         assert 0 <= b["x"] < first["width"] and 0 <= b["y"] < first["height"] and b["w"] > 0 and b["h"] > 0
     # a bigger kernel merges more
@@ -202,3 +206,48 @@ def test_polygon_region_render_excludes_neighbour(client):
     saved = client.get(f"/api/library/{entry['id']}/boxes").json()["regions"]
     assert saved[0]["kind"] == "rect" and saved[0]["name"] == "both"  # last render wins
     client.delete(f"/api/library/{entry['id']}")
+
+
+def test_seeding_is_idempotent_and_spider_verse_ships_with_regions(tmp_path):
+    lib = Library(tmp_path / "lib")
+    sv = lib.get("payday-spider-verse")
+    assert sv.mode == "boxes" and len(sv.regions) == 19
+    assert {r["kind"] for r in sv.regions} == {"rect", "polygon"}
+    assert all(r["id"] for r in sv.regions)
+    assert lib.get("payday-anime").regions is None  # no shipped regions: detected lazily
+
+    # hand-edit, then seed again (a server restart): nothing is rewritten
+    sv.regions = sv.regions[:3]
+    sv.name = "edited"
+    lib.save(sv)
+    meta = lib.meta_path("payday-spider-verse")
+    before = meta.read_text()
+    stamp = meta.stat().st_mtime_ns
+    (lib.root / "payday-anime" / "marker").write_text("x")
+    assert Library(tmp_path / "lib").seed(FIXTURES) == []
+    assert meta.read_text() == before and meta.stat().st_mtime_ns == stamp
+    assert Library(tmp_path / "lib").get("payday-spider-verse").name == "edited"
+    assert (lib.root / "payday-anime" / "marker").exists()
+
+    # the app serves them and the export file round-trips through the CLI format
+    with TestClient(create_app(tmp_path / "lib")) as c:
+        got = c.get("/api/library/payday-spider-verse/boxes").json()
+        assert len(got["regions"]) == 3
+        exported = c.get("/api/library/payday-spider-verse/regions.json")
+        assert exported.status_code == 200 and "attachment" in exported.headers["content-disposition"]
+        assert len(exported.json()["regions"]) == 3
+
+
+def test_regions_cli_export_import(tmp_path):
+    from flash_to_render.cli import main
+
+    lib_dir = tmp_path / "lib"
+    Library(lib_dir)
+    out = tmp_path / "sv.json"
+    assert main(["regions", "export", "payday-spider-verse", str(out), "--library", str(lib_dir)]) == 0
+    data = json.loads(out.read_text())
+    assert len(data["regions"]) == 19 and data["entry"] == "payday-spider-verse"
+    assert main(["regions", "import", "payday-objects", str(out), "--library", str(lib_dir)]) == 0
+    assert len(Library(lib_dir, seed=False).get("payday-objects").regions) == 19
+    assert len(read_regions_file(FIXTURES / "payday-spider-verse.regions.json")) == 19
+    assert main(["regions", "export", "nope", str(out), "--library", str(lib_dir)]) == 2

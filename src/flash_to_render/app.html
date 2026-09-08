@@ -77,6 +77,7 @@
       <label>smoothing <select id="optSmooth"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select></label>
     </div>
     <button id="save" disabled>Save boxes</button>
+    <a id="export" hidden download>Export regions</a>
     <button id="render" class="primary" disabled>Render</button>
     <span id="hint">Box: drag to move, handles to resize, drag on empty canvas to add · Lasso: drag a freehand outline · polygon vertices: drag to adjust, double-click an edge to insert, Delete removes · double-click a region to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects · B / L switch tools</span>
   </div>
@@ -241,6 +242,7 @@ async function openEntry(id) {
     applySettings(data.options);
     $('empty').hidden = true; canvas.hidden = false;
     $('redetect').disabled = $('save').disabled = $('render').disabled = false;
+    $('export').href = `/api/library/${id}/regions.json`; $('export').hidden = false;
     $('results').classList.remove('on');
     fit(); draw();
     say(`${state.entry.name}: ${state.regions.length} region${state.regions.length === 1 ? '' : 's'} (${data.mode})`);

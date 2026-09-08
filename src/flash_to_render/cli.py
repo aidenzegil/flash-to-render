@@ -3,6 +3,8 @@
     flash-to-render sheet.webp -o out/          # convert
     flash-to-render preview out/                # serve a 3D preview of a result folder
     flash-to-render serve                       # web UI to review boxes, render, preview
+    flash-to-render regions export <id> <file>  # move hand-edited regions between machines
+    flash-to-render regions import <id> <file>
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from .pipeline import PipelineOptions, run
 from .segment import SegmentOptions
 from .trace import TraceOptions
 
-SUBCOMMANDS = ("convert", "preview", "serve")
+SUBCOMMANDS = ("convert", "preview", "serve", "regions")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -74,6 +76,12 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=8766)
     s.add_argument("--library", type=Path, default=None, help="library folder (default ~/.flash-to-render/library)")
     s.add_argument("--no-open", action="store_true", help="do not open a browser")
+
+    rg = sub.add_parser("regions", help="export or import a library entry's regions as JSON")
+    rg.add_argument("action", choices=("export", "import"))
+    rg.add_argument("entry_id", help="library entry id, e.g. payday-spider-verse")
+    rg.add_argument("file", type=Path, help="JSON file to write (export) or read (import)")
+    rg.add_argument("--library", type=Path, default=None, help="library folder (default ~/.flash-to-render/library)")
     return parser
 
 
@@ -129,6 +137,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: the web UI needs the server extra: pip install 'flash-to-render[server]' ({exc})", file=sys.stderr)
             return 2
         return serve_app(args.library or DEFAULT_LIBRARY, port=args.port, open_browser=not args.no_open)
+
+    if args.command == "regions":
+        from .library import DEFAULT_LIBRARY, Library, read_regions_file, write_regions_file
+
+        lib = Library(args.library or DEFAULT_LIBRARY, seed=False)
+        try:
+            entry = lib.get(args.entry_id)
+        except KeyError:
+            print(f"error: no library entry {args.entry_id!r} in {lib.root}", file=sys.stderr)
+            return 2
+        if args.action == "export":
+            write_regions_file(args.file, entry)
+            print(f"wrote {len(entry.regions or [])} regions to {args.file}", file=sys.stderr)
+        else:
+            entry.regions = read_regions_file(args.file)
+            entry.mode = "boxes"
+            lib.save(entry)
+            print(f"imported {len(entry.regions)} regions into {entry.id}", file=sys.stderr)
+        return 0
 
     if not args.input.exists():
         print(f"error: {args.input} does not exist", file=sys.stderr)
