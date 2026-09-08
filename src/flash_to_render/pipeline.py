@@ -6,7 +6,7 @@ import logging
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Callable, Sequence, TextIO
 
 import cv2
 import numpy as np
@@ -14,20 +14,15 @@ import numpy as np
 from . import __version__
 from .export import write_cutout_png, write_glb, write_manifest, write_scene_glb, write_svg
 from .mesh import DEFAULT_DEPTH_FRAC, Mesh, depth_for, extrude
-from .segment import (
-    Piece,
-    SegmentOptions,
-    draw_segmentation,
-    load_gray,
-    looks_like_single_design,
-    segment_sheet,
-    whole_image_piece,
-)
+from .segment import Box, Piece, SegmentOptions, crop_pieces, detect, draw_segmentation, load_gray
 from .trace import TraceOptions, TraceResult, trace_piece
 
 log = logging.getLogger(__name__)
 
-__all__ = ["PipelineOptions", "PieceResult", "RunResult", "run", "process_pieces", "detect_mode"]
+__all__ = ["PipelineOptions", "PieceResult", "RunResult", "run", "process_pieces", "detect_mode", "ProgressFn"]
+
+ProgressFn = Callable[[int, int, str], None]
+"""``progress(done, total, piece_id)`` callback, called after every piece is traced and meshed."""
 
 QUALITY_ORDER = ("ok", "tiny", "speckle", "empty")
 
@@ -77,6 +72,7 @@ class PieceResult:
         p, t = self.piece, self.trace
         return {
             "id": p.id,
+            "name": p.name,
             "bbox": [p.x, p.y, p.w, p.h],
             "ink_area": p.ink_area,
             "components": t.components if t else p.components,
@@ -111,15 +107,9 @@ class RunResult:
 
 
 def detect_mode(gray: np.ndarray, options: PipelineOptions) -> tuple[str, list[Piece]]:
-    """Return ``(mode, pieces)``; segmentation is run at most once."""
-    if options.mode == "single":
-        return "single", [whole_image_piece(gray, threshold=options.segment.threshold, pad=options.segment.pad)]
-    pieces = segment_sheet(gray, options.segment)
-    if options.mode == "sheet":
-        return "sheet", pieces
-    if looks_like_single_design(pieces):
-        return "single", [whole_image_piece(gray, threshold=options.segment.threshold, pad=options.segment.pad)]
-    return "sheet", pieces
+    """Return ``(mode, pieces)`` using the automatic boxes; segmentation runs at most once."""
+    mode, boxes = detect(gray, options.segment, options.mode)
+    return mode, crop_pieces(gray, boxes, options.segment)
 
 
 def _classify(piece: Piece, trace: TraceResult, mesh: Mesh, options: PipelineOptions) -> tuple[str, list[str]]:
@@ -137,15 +127,17 @@ def _classify(piece: Piece, trace: TraceResult, mesh: Mesh, options: PipelineOpt
     return "ok", warnings
 
 
-def process_pieces(pieces: list[Piece], options: PipelineOptions) -> list[PieceResult]:
+def process_pieces(pieces: list[Piece], options: PipelineOptions, progress: ProgressFn | None = None) -> list[PieceResult]:
     """Trace and extrude every piece (no files written)."""
     results: list[PieceResult] = []
-    for piece in pieces:
+    for i, piece in enumerate(pieces):
         depth_px = depth_for(piece.longest_side, options.depth_frac)
         trace = trace_piece(piece, options.trace)
         mesh = extrude(trace.polygons, depth_px, center=(piece.w / 2, piece.h / 2), scale=options.scale)
         quality, warnings = _classify(piece, trace, mesh, options)
         results.append(PieceResult(piece=piece, trace=trace, mesh=mesh, depth_px=depth_px, quality=quality, warnings=warnings))
+        if progress:
+            progress(i + 1, len(pieces), piece.id)
     return results
 
 
@@ -162,7 +154,7 @@ def _report_line(r: PieceResult) -> str:
     p = r.piece
     smoothed = " smoothed" if r.trace and r.trace.smoothed else ""
     return (
-        f"  {p.id}  {p.w:4d}x{p.h:<4d} at ({p.x},{p.y})  ink={p.ink_area:6d}  "
+        f"  {p.id:<8s}{p.w:4d}x{p.h:<4d} at ({p.x},{p.y})  ink={p.ink_area:6d}  "
         f"speckle={r.trace.speckle if r.trace else p.speckle:5.2f}  outers={r.trace.outer_count if r.trace else 0:3d}  "
         f"holes={r.trace.hole_count if r.trace else 0:3d}  tris={r.triangles:6d}  {r.quality}{smoothed}"
     )
@@ -173,8 +165,14 @@ def run(
     out_dir: str | Path,
     options: PipelineOptions | None = None,
     report: TextIO | None = sys.stderr,
+    boxes: Sequence[Box] | None = None,
+    progress: ProgressFn | None = None,
 ) -> RunResult:
-    """Run the whole pipeline on one image and write everything into ``out_dir``."""
+    """Run the whole pipeline on one image and write everything into ``out_dir``.
+
+    Pass ``boxes`` (e.g. reviewed in the browser) to skip auto-detection and
+    render exactly those; the run's mode is then ``"boxes"``.
+    """
     options = options or PipelineOptions()
     input_path = Path(input_path)
     out_dir = Path(out_dir)
@@ -182,14 +180,17 @@ def run(
 
     gray = load_gray(input_path)
     sheet_h, sheet_w = gray.shape
-    mode, pieces = detect_mode(gray, options)
+    if boxes is not None:
+        mode, pieces = "boxes", crop_pieces(gray, boxes, options.segment)
+    else:
+        mode, pieces = detect_mode(gray, options)
     if report:
         print(f"{input_path.name}: {sheet_w}x{sheet_h}, mode={mode}, {len(pieces)} piece(s)", file=report)
-    if options.debug and mode == "sheet":
+    if options.debug and mode != "single":
         cv2.imwrite(str(out_dir / "segmentation.png"), draw_segmentation(gray, pieces))
 
     paper, ink = _sheet_levels(gray)
-    results = process_pieces(pieces, options)
+    results = process_pieces(pieces, options, progress)
 
     scene_entries: list[tuple[str, Mesh, tuple[float, float, float]]] = []
     for r in results:

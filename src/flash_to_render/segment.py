@@ -16,6 +16,7 @@ exposed on :class:`SegmentOptions` (and the CLI).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -25,8 +26,14 @@ import numpy as np
 from PIL import Image
 
 __all__ = [
+    "Box",
     "Piece",
     "SegmentOptions",
+    "detect",
+    "detect_boxes",
+    "crop_pieces",
+    "piece_id",
+    "slugify",
     "load_gray",
     "ink_mask",
     "speckle_score",
@@ -161,6 +168,7 @@ class Piece:
     components: int = 0
     speckle: float = 0.0
     id: str = ""
+    name: str = ""
     extra: dict = field(default_factory=dict)
 
     @property
@@ -180,20 +188,77 @@ def _crop_margin(gray: np.ndarray, margin: float) -> tuple[np.ndarray, int]:
     return gray[m : h - m, m : w - m], m
 
 
-def segment_sheet(gray: np.ndarray, options: SegmentOptions | None = None) -> list[Piece]:
-    """Split a greyscale sheet into :class:`Piece` crops in reading order."""
-    opts = (options or SegmentOptions()).resolved(gray.shape)
-    inner, m = _crop_margin(gray, opts.margin)
-    H, W = inner.shape
-    full_h, full_w = gray.shape
+@dataclass
+class Box:
+    """An axis-aligned box on the sheet (pixels, full-image coordinates) with an optional name."""
 
-    ink = ink_mask(inner, threshold=opts.threshold)
+    x: int
+    y: int
+    w: int
+    h: int
+    name: str = ""
+
+    def to_dict(self) -> dict:
+        return {"x": int(self.x), "y": int(self.y), "w": int(self.w), "h": int(self.h), "name": self.name}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Box":
+        return cls(int(round(d["x"])), int(round(d["y"])), int(round(d["w"])), int(round(d["h"])), str(d.get("name", "") or ""))
+
+    def clamp(self, width: int, height: int) -> "Box":
+        x0, y0 = min(max(0, self.x), width - 1), min(max(0, self.y), height - 1)
+        x1, y1 = min(width, self.x + self.w), min(height, self.y + self.h)
+        return Box(x0, y0, max(1, x1 - x0), max(1, y1 - y0), self.name)
+
+    @property
+    def area(self) -> int:
+        return self.w * self.h
+
+
+def slugify(name: str) -> str:
+    """Filename-safe version of a piece name (``"Skull & dagger"`` -> ``"skull-dagger"``)."""
+    out = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return out[:48]
+
+
+def piece_id(index: int, name: str = "") -> str:
+    """``"03"`` for unnamed pieces, ``"03-skull"`` for named ones: sortable *and* readable."""
+    slug = slugify(name) if name else ""
+    return f"{index:02d}-{slug}" if slug else f"{index:02d}"
+
+
+def _ink_components(gray: np.ndarray, opts: SegmentOptions) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(ink, labels, stats)``: the ink mask and the connected components of its dilation."""
+    ink = ink_mask(gray, threshold=opts.threshold)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (opts.merge_kernel, opts.merge_kernel))
     merged = cv2.dilate(ink, k)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(merged, connectivity=8)
+    _n, labels, stats, _ = cv2.connectedComponentsWithStats(merged, connectivity=8)
+    return ink, labels, stats
+
+
+def detect_boxes(gray: np.ndarray, options: SegmentOptions | None = None, mode: str = "sheet") -> list[Box]:
+    """Find the designs on a sheet and return their boxes (padded, full-image coordinates, reading order).
+
+    Pure: nothing is cropped. ``mode`` is ``sheet`` (always segment), ``single``
+    (one box around all the ink) or ``auto`` (single when one component holds
+    most of the ink). Feed the result, edited or not, to :func:`crop_pieces`.
+    """
+    return detect(gray, options, mode)[1]
+
+
+def detect(gray: np.ndarray, options: SegmentOptions | None = None, mode: str = "auto") -> tuple[str, list[Box]]:
+    """Like :func:`detect_boxes` but also returns the resolved mode (``sheet`` or ``single``)."""
+    opts = (options or SegmentOptions()).resolved(gray.shape)
+    full_h, full_w = gray.shape
+    if mode == "single":
+        return "single", [_ink_box(gray, opts.threshold, opts.pad)]
+
+    inner, m = _crop_margin(gray, opts.margin)
+    H, W = inner.shape
+    ink, labels, stats = _ink_components(inner, opts)
 
     comps: list[_Component] = []
-    for lab in range(1, n):
+    for lab in range(1, len(stats)):
         x, y, w, h, _area = (int(v) for v in stats[lab])
         sub_ink = ink[y : y + h, x : x + w]
         sub_lab = labels[y : y + h, x : x + w]
@@ -204,39 +269,111 @@ def segment_sheet(gray: np.ndarray, options: SegmentOptions | None = None) -> li
 
     comps = absorb_small(comps, opts.absorb_max or 0, opts.absorb_gap or 0)
     comps = [c for c in comps if c.w >= opts.min_size and c.h >= opts.min_size and c.ink_area >= opts.min_ink_area]
+    if mode == "auto" and _dominant(comps):
+        return "single", [_ink_box(gray, opts.threshold, opts.pad)]
     comps = reading_order(comps)
 
-    pieces: list[Piece] = []
-    for idx, c in enumerate(comps):
+    boxes: list[Box] = []
+    for c in comps:
         pad = opts.pad
         x0, y0 = max(0, c.x - pad), max(0, c.y - pad)
         x1, y1 = min(W, c.x + c.w + pad), min(H, c.y + c.h + pad)
+        boxes.append(Box(x0 + m, y0 + m, x1 - x0, y1 - y0))
+    return "sheet", boxes
+
+
+def _dominant(comps: Sequence["_Component"], fraction: float = 0.6) -> bool:
+    if len(comps) <= 1:
+        return True
+    total = sum(c.ink_area for c in comps)
+    return total == 0 or max(c.ink_area for c in comps) / total >= fraction
+
+
+def _ink_box(gray: np.ndarray, threshold: int, pad: int) -> Box:
+    """One box around every ink pixel in the image (single-design mode)."""
+    ink = ink_mask(gray, threshold=threshold)
+    ys, xs = np.nonzero(ink)
+    h, w = gray.shape
+    if len(xs) == 0:
+        return Box(0, 0, w, h)
+    x0, x1 = max(0, int(xs.min()) - pad), min(w, int(xs.max()) + 1 + pad)
+    y0, y1 = max(0, int(ys.min()) - pad), min(h, int(ys.max()) + 1 + pad)
+    return Box(x0, y0, x1 - x0, y1 - y0)
+
+
+def crop_pieces(gray: np.ndarray, boxes: Sequence[Box], options: SegmentOptions | None = None) -> list[Piece]:
+    """Cut a :class:`Piece` out of the sheet for every box.
+
+    Which ink inside a box belongs to it? Every connected component of the
+    dilated ink is assigned to the box that holds the largest share of it
+    (the smaller box wins a tie, so a design tucked inside a neighbour's bbox
+    is not duplicated). When no box holds at least half of a component, the
+    user is splitting a merged design and every box keeps the pixels inside
+    it. Anything else inside a box is a neighbour bleeding in and is masked.
+    """
+    opts = (options or SegmentOptions()).resolved(gray.shape)
+    full_h, full_w = gray.shape
+    ink, labels, stats = _ink_components(gray, opts)
+    n_labels = len(stats)
+    comp_px = np.bincount(labels.ravel(), minlength=n_labels).astype(np.float64)
+
+    clamped = [b.clamp(full_w, full_h) for b in boxes]
+    inside = np.zeros((len(clamped), n_labels), dtype=np.float64)
+    for i, box in enumerate(clamped):
+        sub = labels[box.y : box.y + box.h, box.x : box.x + box.w]
+        inside[i] = np.bincount(sub.ravel(), minlength=n_labels)
+    frac = inside / np.maximum(comp_px, 1)[None, :]
+
+    claims: list[set[int]] = [set() for _ in clamped]
+    areas = np.array([b.area for b in clamped]) if clamped else np.zeros(0)
+    for lab in range(1, n_labels):
+        if comp_px[lab] == 0 or not inside[:, lab].any():
+            continue
+        best = frac[:, lab].max()
+        if best >= 0.5:
+            candidates = np.nonzero(frac[:, lab] >= best - 1e-9)[0]
+            owner = int(candidates[np.argmin(areas[candidates])])
+            claims[owner].add(lab)
+        else:
+            for i in np.nonzero(inside[:, lab] > 0)[0]:
+                claims[int(i)].add(lab)
+
+    pieces: list[Piece] = []
+    for idx, box in enumerate(clamped):
+        x0, y0, x1, y1 = box.x, box.y, box.x + box.w, box.y + box.h
         sub_lab = labels[y0:y1, x0:x1]
-        region = np.isin(sub_lab, list(c.labels)) if len(c.labels) > 1 else sub_lab == next(iter(c.labels))
+        keep = sorted(claims[idx])
+        region = np.isin(sub_lab, keep) if keep else np.zeros(sub_lab.shape, dtype=bool)
         crop_ink = ink[y0:y1, x0:x1].copy()
         crop_ink[~region] = 0
-        crop_gray = inner[y0:y1, x0:x1].copy()
+        crop_gray = gray[y0:y1, x0:x1].copy()
         crop_gray[~region] = 255
         n_cc, speck = speckle_score(crop_ink)
         pieces.append(
             Piece(
                 index=idx,
-                x=x0 + m,
-                y=y0 + m,
-                w=x1 - x0,
-                h=y1 - y0,
+                x=x0,
+                y=y0,
+                w=box.w,
+                h=box.h,
                 gray=crop_gray,
                 ink=crop_ink,
                 region=region,
                 sheet_w=full_w,
                 sheet_h=full_h,
-                ink_area=c.ink_area,
+                ink_area=int(np.count_nonzero(crop_ink)),
                 components=n_cc,
                 speckle=speck,
-                id=f"{idx:02d}",
+                id=piece_id(idx, box.name),
+                name=box.name,
             )
         )
     return pieces
+
+
+def segment_sheet(gray: np.ndarray, options: SegmentOptions | None = None) -> list[Piece]:
+    """Detect and crop in one go: :func:`detect_boxes` (sheet mode) then :func:`crop_pieces`."""
+    return crop_pieces(gray, detect_boxes(gray, options, mode="sheet"), options)
 
 
 @dataclass
@@ -317,37 +454,9 @@ def reading_order(comps: list[_Component]) -> list[_Component]:
 
 
 def whole_image_piece(gray: np.ndarray, threshold: int = 150, pad: int = 0) -> Piece:
-    """Treat the entire image as one design (single-image mode).
-
-    The crop is tightened to the ink's bounding box (plus ``pad``) so a design on
-    a large white canvas still gets a sensible extrusion depth.
-    """
-    ink = ink_mask(gray, threshold=threshold)
-    ys, xs = np.nonzero(ink)
-    h, w = gray.shape
-    if len(xs) == 0:
-        x0, y0, x1, y1 = 0, 0, w, h
-    else:
-        x0, x1 = max(0, int(xs.min()) - pad), min(w, int(xs.max()) + 1 + pad)
-        y0, y1 = max(0, int(ys.min()) - pad), min(h, int(ys.max()) + 1 + pad)
-    crop_ink = ink[y0:y1, x0:x1]
-    comps, speck = speckle_score(crop_ink)
-    return Piece(
-        index=0,
-        x=x0,
-        y=y0,
-        w=x1 - x0,
-        h=y1 - y0,
-        gray=gray[y0:y1, x0:x1].copy(),
-        ink=crop_ink.copy(),
-        region=np.ones(crop_ink.shape, dtype=bool),
-        sheet_w=w,
-        sheet_h=h,
-        ink_area=int(np.count_nonzero(crop_ink)),
-        components=comps,
-        speckle=speck,
-        id="00",
-    )
+    """Treat the entire image as one design (single-image mode); the crop is tightened to the ink's bbox."""
+    opts = SegmentOptions(threshold=threshold, pad=pad)
+    return crop_pieces(gray, detect_boxes(gray, opts, mode="single"), opts)[0]
 
 
 def looks_like_single_design(pieces: Sequence[Piece], dominant: float = 0.6) -> bool:
@@ -360,11 +469,12 @@ def looks_like_single_design(pieces: Sequence[Piece], dominant: float = 0.6) -> 
     return max(p.ink_area for p in pieces) / total >= dominant
 
 
-def draw_segmentation(gray: np.ndarray, pieces: Sequence[Piece]) -> np.ndarray:
+def draw_segmentation(gray: np.ndarray, pieces: Sequence[Piece | Box]) -> np.ndarray:
     """Return a BGR copy of the sheet with every piece's box and id drawn on it (debug aid)."""
     out = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     scale = max(0.4, min(gray.shape) / 1500)
     for p in pieces:
         cv2.rectangle(out, (p.x, p.y), (p.x + p.w, p.y + p.h), (0, 0, 255), 2)
-        cv2.putText(out, p.id, (p.x + 3, p.y + int(18 * scale) + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (0, 0, 255), 2)
+        label = getattr(p, "id", None) or p.name or str(pieces.index(p))
+        cv2.putText(out, label, (p.x + 3, p.y + int(18 * scale) + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (0, 0, 255), 2)
     return out

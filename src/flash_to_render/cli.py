@@ -2,6 +2,7 @@
 
     flash-to-render sheet.webp -o out/          # convert
     flash-to-render preview out/                # serve a 3D preview of a result folder
+    flash-to-render serve                       # web UI to review boxes, render, preview
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from .pipeline import PipelineOptions, run
 from .segment import SegmentOptions
 from .trace import TraceOptions
 
-SUBCOMMANDS = ("convert", "preview")
+SUBCOMMANDS = ("convert", "preview", "serve")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("out_dir", type=Path, help="folder produced by `flash-to-render convert`")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+
+    s = sub.add_parser("serve", help="web app: upload or pick a sheet, review the boxes, render and preview")
+    s.add_argument("--port", type=int, default=8766)
+    s.add_argument("--library", type=Path, default=None, help="library folder (default ~/.flash-to-render/library)")
+    s.add_argument("--no-open", action="store_true", help="do not open a browser")
     return parser
 
 
@@ -115,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         from .preview import serve
 
         return serve(args.out_dir, port=args.port, open_browser=not args.no_open)
+
+    if args.command == "serve":
+        try:
+            from .server import DEFAULT_LIBRARY, serve as serve_app
+        except ImportError as exc:
+            print(f"error: the web UI needs the server extra: pip install 'flash-to-render[server]' ({exc})", file=sys.stderr)
+            return 2
+        return serve_app(args.library or DEFAULT_LIBRARY, port=args.port, open_browser=not args.no_open)
 
     if not args.input.exists():
         print(f"error: {args.input} does not exist", file=sys.stderr)

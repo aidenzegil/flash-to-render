@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flash-to-render</title>
+<style>
+  :root { --ink: #1d1d1f; --muted: #6b6b6f; --line: #d6d6d3; --bg: #f3f3f1; --panel: #fbfbfa; --accent: #c8321e; --focus: #2f6fdb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, sans-serif; }
+  body { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 14px; margin: 0; }
+  header #status { color: var(--muted); }
+  header #status.err { color: var(--accent); }
+  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; overflow: auto; }
+  aside h2, main h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  #upload { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  #upload input[type=text], #settings input, #settings select, button { font: inherit; }
+  #upload input[type=text] { padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; }
+  button { padding: 4px 10px; border: 1px solid #b9b9b5; border-radius: 3px; background: #fff; cursor: pointer; }
+  button:hover { border-color: #888; }
+  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  button:disabled { opacity: .5; cursor: default; }
+  #library { list-style: none; margin: 0; padding: 0; }
+  #library li { padding: 6px 8px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; }
+  #library li:hover { background: #ededea; }
+  #library li.active { background: #e3e3df; }
+  #library li .meta { color: var(--muted); font-size: 11px; }
+  main { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 12px 14px; gap: 12px; }
+  #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  #settings { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+  #settings label { display: flex; align-items: center; gap: 4px; }
+  #settings input[type=number] { width: 64px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 3px; }
+  #settings select { padding: 3px 4px; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
+  #hint { color: var(--muted); font-size: 12px; }
+  #stage { position: relative; }
+  #stage canvas { display: block; background: #fff; border: 1px solid var(--line); outline: none; cursor: crosshair; }
+  #stage canvas:focus { border-color: var(--focus); }
+  #empty { color: var(--muted); padding: 40px 0; }
+  #results { display: none; flex-direction: column; gap: 8px; }
+  #results.on { display: flex; }
+  #viewer { width: 100%; height: 560px; border: 1px solid var(--line); background: #b9b9b6; }
+  #pieces { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre; margin: 0; overflow-x: auto; }
+  #progress { color: var(--muted); }
+  a { color: var(--focus); }
+</style>
+</head>
+<body>
+<header>
+  <h1>flash-to-render</h1>
+  <span id="status">loading library</span>
+</header>
+
+<aside>
+  <h2>Library</h2>
+  <form id="upload">
+    <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
+    <input type="text" id="uploadName" placeholder="name (optional)">
+    <button type="submit">Upload image or sheet</button>
+  </form>
+  <ul id="library"></ul>
+</aside>
+
+<main>
+  <div id="toolbar">
+    <button id="redetect" disabled>Re-detect</button>
+    <div id="settings">
+      <label>merge kernel <input type="number" id="optKernel" min="3" step="2" placeholder="auto"></label>
+      <label>min area <input type="number" id="optMinArea" min="0" step="50" placeholder="auto"></label>
+      <label>smoothing <select id="optSmooth"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select></label>
+    </div>
+    <button id="save" disabled>Save boxes</button>
+    <button id="render" class="primary" disabled>Render</button>
+    <span id="hint">drag to move · handles to resize · drag on empty canvas to add · double-click to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects</span>
+  </div>
+
+  <div id="stage">
+    <div id="empty">Pick a sheet from the library or upload one.</div>
+    <canvas id="editor" tabindex="0" hidden></canvas>
+  </div>
+
+  <section id="results">
+    <h2>Render</h2>
+    <div id="progress"></div>
+    <iframe id="viewer" title="3D preview" hidden></iframe>
+    <div id="download"></div>
+    <pre id="pieces"></pre>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const status = $('status');
+const canvas = $('editor');
+const ctx = canvas.getContext('2d');
+
+const state = {
+  entry: null, img: null, boxes: [], selected: -1, dirty: false, scale: 1, dpr: 1,
+  drag: null, mode: null, job: null, pollTimer: null,
+};
+
+function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
+function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
+function fmtDate(t) { return new Date(t * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const isJson = (r.headers.get('content-type') || '').includes('json');
+  const body = isJson ? await r.json() : await r.text();
+  if (!r.ok) throw new Error((body && body.error) || r.statusText);
+  return body;
+}
+
+// ------------------------------------------------------------------ library
+async function loadLibrary(selectId) {
+  const entries = await api('/api/library');
+  const ul = $('library');
+  ul.innerHTML = '';
+  for (const e of entries) {
+    const li = document.createElement('li');
+    li.dataset.id = e.id;
+    li.innerHTML = `<span class="name"></span><span class="meta"></span>`;
+    li.querySelector('.name').textContent = e.name;
+    li.querySelector('.meta').textContent = `${e.width}×${e.height} · ${fmtSize(e.size)} · ${fmtDate(e.added)}` + (e.box_count != null ? ` · ${e.box_count} box${e.box_count === 1 ? '' : 'es'}` : '');
+    li.addEventListener('click', () => open(e.id));
+    if (state.entry && state.entry.id === e.id) li.classList.add('active');
+    ul.appendChild(li);
+  }
+  say(`${entries.length} in library`);
+  if (selectId) open(selectId);
+}
+
+$('upload').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = $('file').files[0];
+  if (!f) { say('choose a file first', true); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('name', $('uploadName').value);
+  say('uploading and detecting…');
+  try {
+    const entry = await api('/api/library/upload', { method: 'POST', body: fd });
+    $('file').value = ''; $('uploadName').value = '';
+    await loadLibrary(entry.id);
+  } catch (e) { say('upload failed: ' + e.message, true); }
+});
+
+// ------------------------------------------------------------------ editor
+function settings() {
+  const k = parseInt($('optKernel').value, 10);
+  const a = parseInt($('optMinArea').value, 10);
+  return { merge_kernel: Number.isFinite(k) ? k : null, min_area: Number.isFinite(a) ? a : null, smooth: $('optSmooth').value, mode: 'auto' };
+}
+function applySettings(o) {
+  if (!o) return;
+  $('optKernel').value = o.merge_kernel ?? '';
+  $('optMinArea').value = o.min_area ?? '';
+  $('optSmooth').value = o.smooth || 'auto';
+}
+
+async function open(id) {
+  if (state.dirty && !confirm('Discard unsaved box edits?')) return;
+  say('opening…');
+  try {
+    const entries = await api('/api/library');
+    state.entry = entries.find((e) => e.id === id);
+    for (const li of $('library').children) li.classList.toggle('active', li.dataset.id === id);
+    const img = new Image();
+    img.src = `/api/library/${id}/image?t=${Date.now()}`;
+    await img.decode();
+    const data = await api(`/api/library/${id}/boxes`);
+    state.img = img;
+    state.boxes = data.boxes.map((b) => ({ ...b }));
+    state.selected = -1; state.dirty = false; state.mode = data.mode;
+    applySettings(data.options);
+    $('empty').hidden = true; canvas.hidden = false;
+    $('redetect').disabled = $('save').disabled = $('render').disabled = false;
+    $('results').classList.remove('on');
+    fit(); draw();
+    say(`${state.entry.name}: ${state.boxes.length} box${state.boxes.length === 1 ? '' : 'es'} (${data.mode})`);
+    canvas.focus();
+  } catch (e) { say('could not open: ' + e.message, true); }
+}
+
+function fit() {
+  if (!state.img) return;
+  const cw = Math.max(200, $('stage').clientWidth - 2);
+  state.dpr = Math.min(devicePixelRatio || 1, 2);
+  state.scale = cw / state.img.width;
+  canvas.style.width = cw + 'px';
+  canvas.style.height = Math.round(state.img.height * state.scale) + 'px';
+  canvas.width = Math.round(cw * state.dpr);
+  canvas.height = Math.round(state.img.height * state.scale * state.dpr);
+}
+addEventListener('resize', () => { fit(); draw(); });
+
+const HANDLE = 7; // css px
+function toImg(ev) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) / state.scale, y: (ev.clientY - r.top) / state.scale };
+}
+function handles(b) {
+  const s = state.scale;
+  const x0 = b.x * s, y0 = b.y * s, x1 = (b.x + b.w) * s, y1 = (b.y + b.h) * s, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+  return [['nw', x0, y0], ['n', xm, y0], ['ne', x1, y0], ['e', x1, ym], ['se', x1, y1], ['s', xm, y1], ['sw', x0, y1], ['w', x0, ym]];
+}
+function draw() {
+  if (!state.img) return;
+  const s = state.scale, d = state.dpr;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(state.img, 0, 0, state.img.width * s, state.img.height * s);
+  state.boxes.forEach((b, i) => {
+    const sel = i === state.selected;
+    const x = b.x * s, y = b.y * s, w = b.w * s, h = b.h * s;
+    if (sel) { ctx.fillStyle = 'rgba(47,111,219,.10)'; ctx.fillRect(x, y, w, h); }
+    ctx.lineWidth = sel ? 2.5 : 1.25;
+    ctx.strokeStyle = sel ? '#2f6fdb' : '#c8321e';
+    ctx.strokeRect(x + .5, y + .5, w, h);
+    const label = String(i).padStart(2, '0') + (b.name ? ' ' + b.name : '');
+    ctx.font = '11px system-ui, sans-serif';
+    const tw = ctx.measureText(label).width + 8;
+    ctx.fillStyle = sel ? '#2f6fdb' : '#c8321e';
+    ctx.fillRect(x, y - 16 < 0 ? y : y - 16, tw, 16);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, x + 4, (y - 16 < 0 ? y : y - 16) + 12);
+    if (sel) {
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5;
+      for (const [, hx, hy] of handles(b)) { ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE); ctx.strokeRect(hx - HANDLE / 2 + .5, hy - HANDLE / 2 + .5, HANDLE - 1, HANDLE - 1); }
+    }
+  });
+}
+
+function hitHandle(b, p) {
+  for (const [name, hx, hy] of handles(b)) if (Math.abs(p.x * state.scale - hx) <= HANDLE && Math.abs(p.y * state.scale - hy) <= HANDLE) return name;
+  return null;
+}
+function hitBox(p) {
+  let best = -1, bestArea = Infinity;
+  state.boxes.forEach((b, i) => {
+    if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h && b.w * b.h < bestArea) { best = i; bestArea = b.w * b.h; }
+  });
+  return best;
+}
+function cursorFor(h) {
+  return { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h] || 'move';
+}
+function setDirty() { state.dirty = true; $('save').textContent = 'Save boxes *'; }
+function clampBox(b) {
+  const W = state.img.width, H = state.img.height;
+  b.x = Math.max(0, Math.min(b.x, W - 1)); b.y = Math.max(0, Math.min(b.y, H - 1));
+  b.w = Math.max(1, Math.min(b.w, W - b.x)); b.h = Math.max(1, Math.min(b.h, H - b.y));
+  return b;
+}
+
+canvas.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0 || !state.img) return;
+  canvas.focus();
+  const p = toImg(ev);
+  const sel = state.boxes[state.selected];
+  const h = sel ? hitHandle(sel, p) : null;
+  if (h) { state.drag = { mode: 'resize', handle: h, start: p, orig: { ...sel } }; }
+  else {
+    const i = hitBox(p);
+    if (i >= 0) { state.selected = i; state.drag = { mode: 'move', start: p, orig: { ...state.boxes[i] } }; }
+    else { state.selected = -1; state.drag = { mode: 'create', start: p, orig: null }; }
+  }
+  canvas.setPointerCapture(ev.pointerId);
+  draw();
+});
+canvas.addEventListener('pointermove', (ev) => {
+  if (!state.img) return;
+  const p = toImg(ev);
+  if (!state.drag) {
+    const sel = state.boxes[state.selected];
+    const h = sel ? hitHandle(sel, p) : null;
+    canvas.style.cursor = h ? cursorFor(h) : (hitBox(p) >= 0 ? 'move' : 'crosshair');
+    return;
+  }
+  const d = state.drag, dx = p.x - d.start.x, dy = p.y - d.start.y;
+  if (d.mode === 'move') {
+    const b = state.boxes[state.selected];
+    b.x = Math.round(d.orig.x + dx); b.y = Math.round(d.orig.y + dy);
+    clampBox(b); setDirty();
+  } else if (d.mode === 'resize') {
+    const b = state.boxes[state.selected], o = d.orig;
+    let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
+    if (d.handle.includes('w')) x0 = o.x + dx;
+    if (d.handle.includes('e')) x1 = o.x + o.w + dx;
+    if (d.handle.includes('n')) y0 = o.y + dy;
+    if (d.handle.includes('s')) y1 = o.y + o.h + dy;
+    b.x = Math.round(Math.min(x0, x1)); b.y = Math.round(Math.min(y0, y1));
+    b.w = Math.round(Math.max(4, Math.abs(x1 - x0))); b.h = Math.round(Math.max(4, Math.abs(y1 - y0)));
+    clampBox(b); setDirty();
+  } else if (d.mode === 'create') {
+    if (!d.box) { d.box = { x: d.start.x, y: d.start.y, w: 1, h: 1, name: '' }; state.boxes.push(d.box); state.selected = state.boxes.length - 1; }
+    d.box.x = Math.round(Math.min(d.start.x, p.x)); d.box.y = Math.round(Math.min(d.start.y, p.y));
+    d.box.w = Math.round(Math.abs(dx)); d.box.h = Math.round(Math.abs(dy));
+    clampBox(d.box);
+  }
+  draw();
+});
+function endDrag(ev) {
+  const d = state.drag;
+  if (!d) return;
+  state.drag = null;
+  if (d.mode === 'create') {
+    if (d.box && (d.box.w < 8 || d.box.h < 8)) { state.boxes.pop(); state.selected = -1; }
+    else if (d.box) setDirty();
+  }
+  try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+  draw();
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+canvas.addEventListener('dblclick', (ev) => {
+  const i = hitBox(toImg(ev));
+  if (i < 0) return;
+  state.selected = i;
+  const name = prompt('Name for box ' + String(i).padStart(2, '0'), state.boxes[i].name || '');
+  if (name === null) return;
+  state.boxes[i].name = name.trim();
+  setDirty(); draw();
+});
+
+canvas.addEventListener('keydown', (ev) => {
+  if (!state.img) return;
+  const b = state.boxes[state.selected];
+  if (ev.key === 'Escape') { state.selected = -1; draw(); return; }
+  if (!b) return;
+  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+    state.boxes.splice(state.selected, 1); state.selected = -1; setDirty(); draw(); ev.preventDefault(); return;
+  }
+  const step = ev.shiftKey ? 10 : 1;
+  const nudge = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
+  if (nudge) { b.x += nudge[0]; b.y += nudge[1]; clampBox(b); setDirty(); draw(); ev.preventDefault(); }
+});
+
+// ------------------------------------------------------------------ actions
+$('redetect').addEventListener('click', async () => {
+  if (!state.entry) return;
+  say('detecting…');
+  try {
+    const data = await api(`/api/library/${state.entry.id}/detect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings()) });
+    state.boxes = data.boxes; state.selected = -1; state.mode = data.mode; setDirty(); draw();
+    say(`detected ${data.boxes.length} box${data.boxes.length === 1 ? '' : 'es'} (${data.mode}) - not saved yet`);
+  } catch (e) { say('detect failed: ' + e.message, true); }
+});
+
+async function saveBoxes() {
+  const body = { boxes: state.boxes, options: settings() };
+  await api(`/api/library/${state.entry.id}/boxes`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  state.dirty = false; $('save').textContent = 'Save boxes';
+}
+$('save').addEventListener('click', async () => {
+  try { await saveBoxes(); say(`saved ${state.boxes.length} boxes`); loadLibrary(); } catch (e) { say('save failed: ' + e.message, true); }
+});
+
+$('render').addEventListener('click', async () => {
+  if (!state.entry) return;
+  if (!state.boxes.length) { say('nothing to render: add a box first', true); return; }
+  $('render').disabled = true;
+  try {
+    await saveBoxes();
+    const body = { boxes: state.boxes, ...settings() };
+    const job = await api(`/api/library/${state.entry.id}/render`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    state.job = job.job_id;
+    $('results').classList.add('on'); $('viewer').hidden = true; $('viewer').src = 'about:blank';
+    $('download').textContent = ''; $('pieces').textContent = '';
+    $('progress').textContent = `rendering 0 / ${state.boxes.length}`;
+    $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    poll();
+  } catch (e) { say('render failed: ' + e.message, true); $('render').disabled = false; }
+});
+
+async function poll() {
+  clearTimeout(state.pollTimer);
+  let job;
+  try { job = await api(`/api/jobs/${state.job}`); } catch (e) { say('lost the job: ' + e.message, true); $('render').disabled = false; return; }
+  const p = job.progress;
+  $('progress').textContent = job.status === 'running' || job.status === 'queued'
+    ? `rendering ${p.done} / ${p.total}${p.current ? ' - ' + p.current : ''}`
+    : job.status === 'failed' ? 'failed: ' + job.error : `rendered ${p.total} piece${p.total === 1 ? '' : 's'}`;
+  if (job.status === 'done') {
+    $('viewer').src = job.preview; $('viewer').hidden = false;
+    const a = document.createElement('a'); a.href = job.download; a.textContent = 'Download outputs (.zip)'; $('download').replaceChildren(a);
+    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  speckle ${q.speckle.toFixed(2).padStart(6)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
+    $('pieces').textContent = ['id                     size        triangles  speckle  quality', ...rows].join('\n');
+    $('render').disabled = false;
+    say('render done');
+    loadLibrary();
+  } else if (job.status === 'failed') { $('render').disabled = false; say('render failed', true); }
+  else state.pollTimer = setTimeout(poll, 500);
+}
+
+loadLibrary().catch((e) => say('library failed: ' + e.message, true));
+</script>
+</body>
+</html>
