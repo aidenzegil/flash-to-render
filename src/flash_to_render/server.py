@@ -2,7 +2,7 @@
 
 The library lives on disk (``--library``, default ``~/.flash-to-render/library``):
 one folder per image with the original file and ``meta.json`` (name, size,
-current boxes, detection options). Renders go into ``<entry>/renders/<job>/``
+current regions - rectangles or freehand polygons - and detection options). Renders go into ``<entry>/renders/<job>/``
 and are served back through the same viewer page the CLI preview uses.
 
 FastAPI is only imported here, so the CLI and the pipeline work without the
@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .pipeline import PipelineOptions, run
-from .segment import Box, SegmentOptions, detect, load_gray
+from .segment import Box, Region, SegmentOptions, detect, load_gray
 from .trace import TraceOptions
 
 __all__ = ["Library", "create_app", "serve", "SEEDS", "DEFAULT_LIBRARY"]
@@ -60,9 +60,17 @@ class Entry:
     height: int
     size: int
     added: float
-    boxes: list[dict] | None = None
+    regions: list[dict] | None = None
+    """``[{"id", "name", "kind": "rect" | "polygon", "points": [[x, y], ...]}, ...]`` in image pixels."""
     mode: str | None = None
     options: dict = field(default_factory=dict)
+
+    @property
+    def boxes(self) -> list[dict] | None:
+        """Bounding boxes of the regions (legacy rect-only view)."""
+        if self.regions is None:
+            return None
+        return [Region.from_dict(r).bbox().to_dict() for r in self.regions]
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -73,7 +81,7 @@ class Entry:
             "height": self.height,
             "size": self.size,
             "added": self.added,
-            "box_count": len(self.boxes) if self.boxes is not None else None,
+            "box_count": len(self.regions) if self.regions is not None else None,
             "mode": self.mode,
         }
 
@@ -163,6 +171,8 @@ class Library:
 
     def _load(self, meta: Path) -> Entry:
         d = json.loads(meta.read_text())
+        if "regions" not in d and d.get("boxes") is not None:  # sidecars written before polygons existed
+            d["regions"] = [Region.from_box(Box.from_dict(b)).to_dict() for b in d["boxes"]]
         return Entry(**{k: d.get(k) for k in Entry.__dataclass_fields__ if k in d})
 
 
@@ -187,12 +197,22 @@ class DetectIn(BaseModel):
     mode: str = "auto"
 
 
+class RegionIn(BaseModel):
+    points: list[list[float]]
+    kind: str = "polygon"
+    name: str = ""
+    id: str = ""
+
+
 class BoxesIn(BaseModel):
-    boxes: list[BoxIn]
+    regions: list[RegionIn] | None = None
+    boxes: list[BoxIn] | None = None
+    """Legacy rect-only payload; ``regions`` wins when both are given."""
     options: dict[str, Any] = {}
 
 
 class RenderIn(BaseModel):
+    regions: list[RegionIn] | None = None
     boxes: list[BoxIn] | None = None
     merge_kernel: int | None = None
     min_area: int | None = None
@@ -203,6 +223,30 @@ class RenderIn(BaseModel):
 
 def _segment_options(d: DetectIn | RenderIn) -> SegmentOptions:
     return SegmentOptions(threshold=d.threshold, merge_kernel=d.merge_kernel, min_ink_area=d.min_area)
+
+
+def _regions_in(body: BoxesIn | RenderIn, width: int, height: int) -> list[Region] | None:
+    """Regions from a request body (``regions`` or legacy ``boxes``), clamped to the image; ``None`` if absent."""
+    if body.regions is not None:
+        raw = [Region.from_dict(r.model_dump()) for r in body.regions]
+    elif body.boxes is not None:
+        raw = [Region.from_box(Box.from_dict(b.model_dump())) for b in body.boxes]
+    else:
+        return None
+    out: list[Region] = []
+    for i, r in enumerate(raw):
+        if len(r.points) < 3:
+            raise HTTPException(400, f"region {i} needs at least 3 points")
+        pts = [(min(max(0.0, x), float(width)), min(max(0.0, y), float(height))) for x, y in r.points]
+        if r.kind == "rect":
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            pts = [(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))]
+        out.append(Region(pts, r.kind if r.kind in ("rect", "polygon") else "polygon", r.name.strip(), r.id or uuid.uuid4().hex[:6]))
+    return out
+
+
+def _regions_out(entry: Entry) -> dict[str, Any]:
+    return {"regions": entry.regions, "boxes": entry.boxes, "mode": entry.mode, "options": entry.options, "width": entry.width, "height": entry.height}
 
 
 # --------------------------------------------------------------------------- #
@@ -241,6 +285,11 @@ class Job:
 # --------------------------------------------------------------------------- #
 
 
+def _with_id(region: Region) -> Region:
+    region.id = region.id or uuid.uuid4().hex[:6]
+    return region
+
+
 def _page(name: str) -> bytes:
     return resources.files(__package__).joinpath(name).read_bytes()
 
@@ -266,12 +315,12 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
 
     def ensure_boxes(entry: Entry, opts: DetectIn | None = None) -> Entry:
         """Run detection for an entry that has never been detected (or on demand) and persist it."""
-        if entry.boxes is not None and opts is None:
+        if entry.regions is not None and opts is None:
             return entry
         opts = opts or DetectIn()
         gray = load_gray(library.image_path(entry))
         mode, boxes = detect(gray, _segment_options(opts), opts.mode)
-        entry.boxes = [b.to_dict() for b in boxes]
+        entry.regions = [_with_id(Region.from_box(b)).to_dict() for b in boxes]
         entry.mode = mode
         entry.options = opts.model_dump()
         library.save(entry)
@@ -314,18 +363,21 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
 
     @app.get("/api/library/{entry_id}/boxes")
     def get_boxes(entry_id: str) -> dict:
-        entry = ensure_boxes(entry_or_404(entry_id))
-        return {"boxes": entry.boxes, "mode": entry.mode, "options": entry.options, "width": entry.width, "height": entry.height}
+        """Current regions (rectangles and polygons) plus their bounding boxes."""
+        return _regions_out(ensure_boxes(entry_or_404(entry_id)))
 
     @app.put("/api/library/{entry_id}/boxes")
     def put_boxes(entry_id: str, body: BoxesIn) -> dict:
         entry = entry_or_404(entry_id)
-        entry.boxes = [Box.from_dict(b.model_dump()).clamp(entry.width, entry.height).to_dict() for b in body.boxes]
+        regions = _regions_in(body, entry.width, entry.height)
+        if regions is None:
+            raise HTTPException(400, "send regions (or boxes)")
+        entry.regions = [r.to_dict() for r in regions]
         entry.mode = "boxes"
         if body.options:
             entry.options = body.options
         library.save(entry)
-        return {"boxes": entry.boxes, "mode": entry.mode, "options": entry.options}
+        return _regions_out(entry)
 
     @app.post("/api/library/{entry_id}/detect")
     def redetect(entry_id: str, body: DetectIn | None = None) -> dict:
@@ -334,27 +386,28 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         opts = body or DetectIn()
         gray = load_gray(library.image_path(entry))
         mode, boxes = detect(gray, _segment_options(opts), opts.mode)
-        return {"boxes": [b.to_dict() for b in boxes], "mode": mode, "options": opts.model_dump()}
+        regions = [_with_id(Region.from_box(b)) for b in boxes]
+        return {"regions": [r.to_dict() for r in regions], "boxes": [b.to_dict() for b in boxes], "mode": mode, "options": opts.model_dump()}
 
     # -- render jobs
     @app.post("/api/library/{entry_id}/render")
     def render(entry_id: str, body: RenderIn | None = None) -> dict:
         entry = entry_or_404(entry_id)
         body = body or RenderIn()
-        if body.boxes is not None:
-            boxes = [Box.from_dict(b.model_dump()) for b in body.boxes]
-            entry.boxes = [b.clamp(entry.width, entry.height).to_dict() for b in boxes]
+        regions = _regions_in(body, entry.width, entry.height)
+        if regions is not None:
+            entry.regions = [r.to_dict() for r in regions]
             entry.mode = "boxes"
             library.save(entry)
         else:
             entry = ensure_boxes(entry)
-            boxes = [Box.from_dict(b) for b in entry.boxes or []]
-        if not boxes:
-            raise HTTPException(400, "no boxes to render")
+            regions = [Region.from_dict(r) for r in entry.regions or []]
+        if not regions:
+            raise HTTPException(400, "no regions to render")
 
         job_id = uuid.uuid4().hex[:10]
         out_dir = library.dir(entry.id) / "renders" / job_id
-        job = Job(id=job_id, entry_id=entry.id, out_dir=out_dir, total=len(boxes))
+        job = Job(id=job_id, entry_id=entry.id, out_dir=out_dir, total=len(regions))
         jobs[job_id] = job
         options = PipelineOptions(
             segment=_segment_options(body),
@@ -369,7 +422,7 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         def work() -> None:
             job.status = "running"
             try:
-                result = run(library.image_path(entry), out_dir, options, report=None, boxes=boxes, progress=progress)
+                result = run(library.image_path(entry), out_dir, options, report=None, boxes=regions, progress=progress)
                 job.pieces = [r.to_manifest() for r in result.pieces]
                 job.status = "done"
             except Exception as exc:  # surface to the UI instead of dying silently

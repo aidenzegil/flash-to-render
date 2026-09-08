@@ -27,6 +27,7 @@ from PIL import Image
 
 __all__ = [
     "Box",
+    "Region",
     "Piece",
     "SegmentOptions",
     "detect",
@@ -169,6 +170,8 @@ class Piece:
     speckle: float = 0.0
     id: str = ""
     name: str = ""
+    kind: str = "rect"
+    """``rect`` or ``polygon``: the kind of region this piece was cut with."""
     extra: dict = field(default_factory=dict)
 
     @property
@@ -213,6 +216,68 @@ class Box:
     @property
     def area(self) -> int:
         return self.w * self.h
+
+
+@dataclass
+class Region:
+    """A design outline on the sheet: a rectangle or a freehand polygon, in image pixel coordinates.
+
+    This is the shape stored in the library sidecar
+    (``{"id", "name", "kind": "rect" | "polygon", "points": [[x, y], ...]}``).
+    A rectangle is just a 4-point polygon; :meth:`bbox` and :meth:`mask` are
+    what the cropper needs from either kind.
+    """
+
+    points: list[tuple[float, float]]
+    kind: str = "polygon"
+    name: str = ""
+    id: str = ""
+
+    @classmethod
+    def rect(cls, x: float, y: float, w: float, h: float, name: str = "", id: str = "") -> "Region":
+        return cls([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], "rect", name, id)
+
+    @classmethod
+    def from_box(cls, box: "Box") -> "Region":
+        return cls.rect(box.x, box.y, box.w, box.h, box.name)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Region":
+        if "points" in d:
+            pts = [(float(p[0]), float(p[1])) for p in d["points"]]
+            kind = d.get("kind") or ("rect" if len(pts) == 4 else "polygon")
+            return cls(pts, kind, str(d.get("name", "") or ""), str(d.get("id", "") or ""))
+        return cls.from_box(Box.from_dict(d))  # legacy rect-only shape
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "points": [[round(float(x), 1), round(float(y), 1)] for x, y in self.points],
+        }
+
+    def bbox(self) -> Box:
+        xs = [p[0] for p in self.points]
+        ys = [p[1] for p in self.points]
+        x0, y0 = int(np.floor(min(xs))), int(np.floor(min(ys)))
+        x1, y1 = int(np.ceil(max(xs))), int(np.ceil(max(ys)))
+        return Box(x0, y0, max(1, x1 - x0), max(1, y1 - y0), self.name)
+
+    def mask(self, box: "Box") -> np.ndarray:
+        """Boolean mask of the region's interior, in the coordinates of ``box`` (normally its own clamped bbox)."""
+        if self.kind == "rect":
+            return np.ones((box.h, box.w), dtype=bool)
+        m = np.zeros((box.h, box.w), dtype=np.uint8)
+        pts = np.array([[x - box.x, y - box.y] for x, y in self.points], dtype=np.float32)
+        cv2.fillPoly(m, [np.round(pts).astype(np.int32)], 255)
+        return m > 0
+
+    @property
+    def area(self) -> float:
+        xs = np.array([p[0] for p in self.points])
+        ys = np.array([p[1] for p in self.points])
+        return float(abs(np.dot(xs, np.roll(ys, -1)) - np.dot(ys, np.roll(xs, -1))) / 2)
 
 
 def slugify(name: str) -> str:
@@ -301,15 +366,19 @@ def _ink_box(gray: np.ndarray, threshold: int, pad: int) -> Box:
     return Box(x0, y0, x1 - x0, y1 - y0)
 
 
-def crop_pieces(gray: np.ndarray, boxes: Sequence[Box], options: SegmentOptions | None = None) -> list[Piece]:
-    """Cut a :class:`Piece` out of the sheet for every box.
+def crop_pieces(gray: np.ndarray, regions: Sequence[Box | Region], options: SegmentOptions | None = None) -> list[Piece]:
+    """Cut a :class:`Piece` out of the sheet for every region (a :class:`Box` or a :class:`Region`).
 
-    Which ink inside a box belongs to it? Every connected component of the
-    dilated ink is assigned to the box that holds the largest share of it
-    (the smaller box wins a tie, so a design tucked inside a neighbour's bbox
-    is not duplicated). When no box holds at least half of a component, the
-    user is splitting a merged design and every box keeps the pixels inside
-    it. Anything else inside a box is a neighbour bleeding in and is masked.
+    A polygon region is cropped to its bounding box and everything outside the
+    polygon is set to paper before anything else happens, so ink from a
+    neighbouring design inside the bbox is excluded.
+
+    Which of the remaining ink belongs to the region? Every connected component
+    of the dilated ink is assigned to the region that holds the largest share
+    of it (the smaller region wins a tie, so a design tucked inside a
+    neighbour's bbox is not duplicated). When no region holds at least half of
+    a component, the user is splitting a merged design and every region keeps
+    the pixels inside it. Anything else is a neighbour bleeding in and is masked.
     """
     opts = (options or SegmentOptions()).resolved(gray.shape)
     full_h, full_w = gray.shape
@@ -317,15 +386,17 @@ def crop_pieces(gray: np.ndarray, boxes: Sequence[Box], options: SegmentOptions 
     n_labels = len(stats)
     comp_px = np.bincount(labels.ravel(), minlength=n_labels).astype(np.float64)
 
-    clamped = [b.clamp(full_w, full_h) for b in boxes]
-    inside = np.zeros((len(clamped), n_labels), dtype=np.float64)
-    for i, box in enumerate(clamped):
+    regs = [r if isinstance(r, Region) else Region.from_box(r) for r in regions]
+    boxes = [r.bbox().clamp(full_w, full_h) for r in regs]
+    masks = [r.mask(b) for r, b in zip(regs, boxes)]
+    inside = np.zeros((len(boxes), n_labels), dtype=np.float64)
+    for i, (box, mask) in enumerate(zip(boxes, masks)):
         sub = labels[box.y : box.y + box.h, box.x : box.x + box.w]
-        inside[i] = np.bincount(sub.ravel(), minlength=n_labels)
+        inside[i] = np.bincount(sub[mask].ravel(), minlength=n_labels)
     frac = inside / np.maximum(comp_px, 1)[None, :]
 
-    claims: list[set[int]] = [set() for _ in clamped]
-    areas = np.array([b.area for b in clamped]) if clamped else np.zeros(0)
+    claims: list[set[int]] = [set() for _ in boxes]
+    areas = np.array([m.sum() for m in masks]) if boxes else np.zeros(0)
     for lab in range(1, n_labels):
         if comp_px[lab] == 0 or not inside[:, lab].any():
             continue
@@ -339,11 +410,11 @@ def crop_pieces(gray: np.ndarray, boxes: Sequence[Box], options: SegmentOptions 
                 claims[int(i)].add(lab)
 
     pieces: list[Piece] = []
-    for idx, box in enumerate(clamped):
+    for idx, (reg, box, mask) in enumerate(zip(regs, boxes, masks)):
         x0, y0, x1, y1 = box.x, box.y, box.x + box.w, box.y + box.h
         sub_lab = labels[y0:y1, x0:x1]
         keep = sorted(claims[idx])
-        region = np.isin(sub_lab, keep) if keep else np.zeros(sub_lab.shape, dtype=bool)
+        region = (np.isin(sub_lab, keep) if keep else np.zeros(sub_lab.shape, dtype=bool)) & mask
         crop_ink = ink[y0:y1, x0:x1].copy()
         crop_ink[~region] = 0
         crop_gray = gray[y0:y1, x0:x1].copy()
@@ -364,8 +435,9 @@ def crop_pieces(gray: np.ndarray, boxes: Sequence[Box], options: SegmentOptions 
                 ink_area=int(np.count_nonzero(crop_ink)),
                 components=n_cc,
                 speckle=speck,
-                id=piece_id(idx, box.name),
-                name=box.name,
+                id=piece_id(idx, reg.name),
+                name=reg.name,
+                kind=reg.kind,
             )
         )
     return pieces

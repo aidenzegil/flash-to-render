@@ -14,7 +14,7 @@ import numpy as np
 from . import __version__
 from .export import write_cutout_png, write_glb, write_manifest, write_scene_glb, write_svg
 from .mesh import DEFAULT_DEPTH_FRAC, Mesh, depth_for, extrude
-from .segment import Box, Piece, SegmentOptions, crop_pieces, detect, draw_segmentation, load_gray
+from .segment import Box, Piece, Region, SegmentOptions, crop_pieces, detect, draw_segmentation, load_gray
 from .trace import TraceOptions, TraceResult, trace_piece
 
 log = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class PieceResult:
         return {
             "id": p.id,
             "name": p.name,
+            "kind": p.kind,
             "bbox": [p.x, p.y, p.w, p.h],
             "ink_area": p.ink_area,
             "components": t.components if t else p.components,
@@ -165,13 +166,14 @@ def run(
     out_dir: str | Path,
     options: PipelineOptions | None = None,
     report: TextIO | None = sys.stderr,
-    boxes: Sequence[Box] | None = None,
+    boxes: Sequence[Box | Region] | None = None,
     progress: ProgressFn | None = None,
 ) -> RunResult:
     """Run the whole pipeline on one image and write everything into ``out_dir``.
 
-    Pass ``boxes`` (e.g. reviewed in the browser) to skip auto-detection and
-    render exactly those; the run's mode is then ``"boxes"``.
+    Pass ``boxes`` (rectangles or freehand :class:`Region` polygons, e.g.
+    reviewed in the browser) to skip auto-detection and render exactly those;
+    the run's mode is then ``"boxes"``.
     """
     options = options or PipelineOptions()
     input_path = Path(input_path)

@@ -59,6 +59,8 @@ def test_detect_returns_boxes_within_pipeline_tolerance(client, entry_id):
     first = client.get(f"/api/library/{entry_id}/boxes").json()  # lazily detected and persisted
     assert first["mode"] == "sheet"
     assert abs(len(first["boxes"]) - expected) <= tol
+    assert len(first["regions"]) == len(first["boxes"])
+    assert all(r["kind"] == "rect" and len(r["points"]) == 4 and r["id"] for r in first["regions"])
     again = client.post(f"/api/library/{entry_id}/detect", json={"mode": "sheet"}).json()
     assert len(again["boxes"]) == len(first["boxes"])
     for b in again["boxes"]:
@@ -79,11 +81,21 @@ def test_put_boxes_round_trips_and_clamps(client):
     saved = client.get(f"/api/library/{entry_id}/boxes").json()
     assert saved["mode"] == "boxes" and saved["options"] == {"merge_kernel": 15}
     assert saved["boxes"][0] == {"x": 10, "y": 20, "w": 300, "h": 200, "name": "skull"}
+    assert saved["regions"][0]["kind"] == "rect" and saved["regions"][0]["points"][2] == [310, 220]
     assert saved["boxes"][1]["x"] + saved["boxes"][1]["w"] <= saved["width"]
     assert saved["boxes"][1]["y"] + saved["boxes"][1]["h"] <= saved["height"]
     # survives a fresh Library instance (it is on disk)
     fresh = create_app(client.app.state.library.root, seed=False)
-    assert fresh.state.library.get(entry_id).boxes[0]["name"] == "skull"
+    assert fresh.state.library.get(entry_id).regions[0]["name"] == "skull"
+
+    # polygons round-trip too, keep their ids, and get one when missing
+    poly = {"kind": "polygon", "name": "tri", "id": "abc123", "points": [[10, 10], [300, 10], [10, 300]]}
+    r = client.put(f"/api/library/{entry_id}/boxes", json={"regions": [poly, {"kind": "polygon", "points": [[0, 0], [50, 0], [0, 50]]}]})
+    assert r.status_code == 200
+    got = client.get(f"/api/library/{entry_id}/boxes").json()["regions"]
+    assert got[0]["id"] == "abc123" and got[0]["points"] == [[10, 10], [300, 10], [10, 300]]
+    assert got[1]["id"] and got[1]["kind"] == "polygon"
+    assert client.put(f"/api/library/{entry_id}/boxes", json={"regions": [{"kind": "polygon", "points": [[0, 0], [5, 5]]}]}).status_code == 400
 
 
 def test_render_uses_edited_boxes_and_names(client):
@@ -108,8 +120,9 @@ def test_render_uses_edited_boxes_and_names(client):
     assert all(p["files"]["glb"] == f"{p['id']}.glb" for p in job["pieces"])
     assert [p["bbox"] for p in job["pieces"]][2][:2] == [wide["x"], wide["y"]]
 
-    # the edited boxes were persisted as the entry's current boxes
-    assert [bx["name"] for bx in client.get(f"/api/library/{entry_id}/boxes").json()["boxes"]] == ["Sparkle", "Heart & Stripes", "pair"]
+    # the edited boxes were persisted as the entry's current regions
+    assert [bx["name"] for bx in client.get(f"/api/library/{entry_id}/boxes").json()["regions"]] == ["Sparkle", "Heart & Stripes", "pair"]
+    assert all(p["kind"] == "rect" for p in job["pieces"])
 
     glb = client.get(f"/api/jobs/{job['id']}/preview.glb")
     assert glb.status_code == 200 and glb.content[:4] == b"glTF"
@@ -152,3 +165,40 @@ def test_bad_upload_and_missing_things(client):
     assert client.get("/api/library/nope/boxes").status_code == 404
     assert client.get("/api/jobs/nope").status_code == 404
     assert client.post("/api/library/payday-anime/render", json={"boxes": []}).status_code == 400
+
+
+def test_polygon_region_render_excludes_neighbour(client):
+    """A lasso around design A whose bbox also covers design B renders only A's ink."""
+    sheet = np.full((400, 400), 255, dtype=np.uint8)
+    sheet[100:200, 100:200] = 0
+    sheet[210:310, 210:310] = 0
+    buf = io.BytesIO()
+    Image.fromarray(sheet).save(buf, format="PNG")
+    entry = client.post("/api/library/upload", files={"file": ("two.png", buf.getvalue(), "image/png")}).json()
+    tri = {"kind": "polygon", "name": "A only", "points": [[90, 90], [320, 90], [90, 320]]}
+    rect = {"kind": "rect", "name": "both", "points": [[90, 90], [320, 90], [320, 320], [90, 320]]}
+
+    def render(regions):
+        r = client.post(f"/api/library/{entry['id']}/render", json={"regions": regions})
+        assert r.status_code == 200, r.text
+        job = wait_for_job(client, r.json()["job_id"])
+        assert job["status"] == "done", job["error"]
+        return job
+
+    poly_job = render([tri])
+    rect_job = render([rect])
+    (poly,) = poly_job["pieces"]
+    (both,) = rect_job["pieces"]
+    assert poly["bbox"] == both["bbox"] == [90, 90, 230, 230]
+    assert both["ink_area"] == 2 * 100 * 100
+    assert poly["ink_area"] == 100 * 100
+    assert poly["kind"] == "polygon" and poly["id"] == "00-a-only" and both["kind"] == "rect"
+    assert poly["triangles"] < both["triangles"]
+    # the cutout PNG is transparent where design B was
+    png = Image.open(io.BytesIO(client.get(f"/api/jobs/{poly_job['id']}/preview/00-a-only.png").content))
+    alpha = np.asarray(png)[..., 3]
+    assert alpha[250 - 90, 250 - 90] == 0 and alpha[150 - 90, 150 - 90] == 255
+    # the polygon is what the entry now remembers
+    saved = client.get(f"/api/library/{entry['id']}/boxes").json()["regions"]
+    assert saved[0]["kind"] == "rect" and saved[0]["name"] == "both"  # last render wins
+    client.delete(f"/api/library/{entry['id']}")

@@ -3,7 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 from flash_to_render.segment import (
+    Region,
     SegmentOptions,
+    crop_pieces,
     absorb_small,
     ink_mask,
     looks_like_single_design,
@@ -104,3 +106,24 @@ def test_single_image_detection_and_whole_image_piece():
 
     multi = _sheet([(50, 50, 100, 100), (400, 50, 100, 100), (50, 400, 100, 100)])
     assert not looks_like_single_design(segment_sheet(multi))
+
+
+def test_polygon_region_excludes_neighbour_inside_its_bbox():
+    """Two squares on a diagonal: a triangle around A has a bbox that also covers B."""
+    sheet = _sheet([(100, 100, 100, 100), (210, 210, 100, 100)], size=(400, 400))
+    triangle = Region([(90, 90), (320, 90), (90, 320)], "polygon", "A only")
+    rect = Region.rect(90, 90, 230, 230, "both")
+    (poly_piece,) = crop_pieces(sheet, [triangle])
+    (rect_piece,) = crop_pieces(sheet, [rect])
+    assert poly_piece.bbox == rect_piece.bbox == (90, 90, 230, 230)
+    assert rect_piece.ink_area == 2 * 100 * 100
+    assert poly_piece.ink_area == 100 * 100
+    assert poly_piece.kind == "polygon" and poly_piece.id == "00-a-only"
+    # everything outside the polygon is paper in the crop
+    assert poly_piece.gray[250 - 90, 250 - 90] == 255 and poly_piece.ink[250 - 90, 250 - 90] == 0
+    assert poly_piece.gray[150 - 90, 150 - 90] == 0
+    # polygon serialisation round-trips and legacy rect dicts still load
+    assert Region.from_dict(triangle.to_dict()).points == [(90.0, 90.0), (320.0, 90.0), (90.0, 320.0)]
+    legacy = Region.from_dict({"x": 1, "y": 2, "w": 3, "h": 4, "name": "n"})
+    assert legacy.kind == "rect" and legacy.name == "n"
+    assert legacy.bbox().to_dict() == {"x": 1, "y": 2, "w": 3, "h": 4, "name": "n"}

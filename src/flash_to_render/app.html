@@ -22,6 +22,10 @@
   button:hover { border-color: #888; }
   button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
   button:disabled { opacity: .5; cursor: default; }
+  #tools { display: inline-flex; border: 1px solid #b9b9b5; border-radius: 3px; overflow: hidden; }
+  #tools button { border: 0; border-radius: 0; }
+  #tools button + button { border-left: 1px solid #b9b9b5; }
+  #tools button.on { background: var(--ink); color: #fff; }
   #library { list-style: none; margin: 0; padding: 0; }
   #library li { padding: 6px 8px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; }
   #library li:hover { background: #ededea; }
@@ -35,8 +39,9 @@
   #settings select { padding: 3px 4px; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
   #hint { color: var(--muted); font-size: 12px; }
   #stage { position: relative; }
-  #stage canvas { display: block; background: #fff; border: 1px solid var(--line); outline: none; cursor: crosshair; }
+  #stage canvas { display: block; background: #fff; border: 1px solid var(--line); outline: none; cursor: crosshair; touch-action: none; }
   #stage canvas:focus { border-color: var(--focus); }
+  [hidden] { display: none !important; }
   #empty { color: var(--muted); padding: 40px 0; }
   #results { display: none; flex-direction: column; gap: 8px; }
   #results.on { display: flex; }
@@ -64,6 +69,7 @@
 
 <main>
   <div id="toolbar">
+    <span id="tools"><button id="toolBox" class="on" title="Box tool (B)">Box</button><button id="toolLasso" title="Lasso tool (L)">Lasso</button></span>
     <button id="redetect" disabled>Re-detect</button>
     <div id="settings">
       <label>merge kernel <input type="number" id="optKernel" min="3" step="2" placeholder="auto"></label>
@@ -72,7 +78,7 @@
     </div>
     <button id="save" disabled>Save boxes</button>
     <button id="render" class="primary" disabled>Render</button>
-    <span id="hint">drag to move · handles to resize · drag on empty canvas to add · double-click to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects</span>
+    <span id="hint">Box: drag to move, handles to resize, drag on empty canvas to add · Lasso: drag a freehand outline · polygon vertices: drag to adjust, double-click an edge to insert, Delete removes · double-click a region to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects · B / L switch tools</span>
   </div>
 
   <div id="stage">
@@ -96,14 +102,16 @@ const status = $('status');
 const canvas = $('editor');
 const ctx = canvas.getContext('2d');
 
+// regions: [{ id, name, kind: 'rect' | 'polygon', points: [[x, y], ...] }] in image pixels
 const state = {
-  entry: null, img: null, boxes: [], selected: -1, dirty: false, scale: 1, dpr: 1,
-  drag: null, mode: null, job: null, pollTimer: null,
+  entry: null, img: null, regions: [], selected: -1, vertex: -1, dirty: false, scale: 1, dpr: 1,
+  tool: 'box', drag: null, mode: null, job: null, pollTimer: null,
 };
 
 function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
 function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
 function fmtDate(t) { return new Date(t * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+function uid() { return Math.random().toString(16).slice(2, 8); }
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
@@ -111,6 +119,51 @@ async function api(path, opts = {}) {
   const body = isJson ? await r.json() : await r.text();
   if (!r.ok) throw new Error((body && body.error) || r.statusText);
   return body;
+}
+
+// ------------------------------------------------------------------ geometry
+function bbox(reg) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of reg.points) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+function area(reg) {
+  let a = 0; const p = reg.points;
+  for (let i = 0; i < p.length; i++) { const [x0, y0] = p[i], [x1, y1] = p[(i + 1) % p.length]; a += x0 * y1 - x1 * y0; }
+  return Math.abs(a) / 2;
+}
+function inside(reg, x, y) {
+  const p = reg.points; let hit = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    const [xi, yi] = p[i], [xj, yj] = p[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) hit = !hit;
+  }
+  return hit;
+}
+function rectPoints(x, y, w, h) { return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; }
+function setRect(reg, x, y, w, h) { reg.points = rectPoints(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function translate(reg, dx, dy) {
+  const W = state.img.width, H = state.img.height, b = bbox(reg);
+  dx = Math.max(-b.x, Math.min(dx, W - b.x - b.w)); dy = Math.max(-b.y, Math.min(dy, H - b.y - b.h));
+  reg.points = reg.points.map(([x, y]) => [Math.round(x + dx), Math.round(y + dy)]);
+}
+function clampPoint([x, y]) { return [Math.max(0, Math.min(Math.round(x), state.img.width)), Math.max(0, Math.min(Math.round(y), state.img.height))]; }
+function simplify(points, tol) {  // Douglas-Peucker on an open polyline
+  if (points.length < 3) return points;
+  const sq = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+  const dist = (p, a, b) => {
+    const l = sq(a, b); if (l === 0) return sq(p, a);
+    let t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / l; t = Math.max(0, Math.min(1, t));
+    return sq(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+  };
+  const keep = new Array(points.length).fill(false); keep[0] = keep[points.length - 1] = true;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop(); let best = -1, bestD = 0;
+    for (let i = s + 1; i < e; i++) { const d = dist(points[i], points[s], points[e]); if (d > bestD) { best = i; bestD = d; } }
+    if (best >= 0 && bestD > tol * tol) { keep[best] = true; stack.push([s, best], [best, e]); }
+  }
+  return points.filter((_, i) => keep[i]);
 }
 
 // ------------------------------------------------------------------ library
@@ -123,13 +176,13 @@ async function loadLibrary(selectId) {
     li.dataset.id = e.id;
     li.innerHTML = `<span class="name"></span><span class="meta"></span>`;
     li.querySelector('.name').textContent = e.name;
-    li.querySelector('.meta').textContent = `${e.width}×${e.height} · ${fmtSize(e.size)} · ${fmtDate(e.added)}` + (e.box_count != null ? ` · ${e.box_count} box${e.box_count === 1 ? '' : 'es'}` : '');
-    li.addEventListener('click', () => open(e.id));
+    li.querySelector('.meta').textContent = `${e.width}×${e.height} · ${fmtSize(e.size)} · ${fmtDate(e.added)}` + (e.box_count != null ? ` · ${e.box_count} region${e.box_count === 1 ? '' : 's'}` : '');
+    li.addEventListener('click', () => openEntry(e.id));
     if (state.entry && state.entry.id === e.id) li.classList.add('active');
     ul.appendChild(li);
   }
   say(`${entries.length} in library`);
-  if (selectId) open(selectId);
+  if (selectId) openEntry(selectId);
 }
 
 $('upload').addEventListener('submit', async (ev) => {
@@ -159,9 +212,18 @@ function applySettings(o) {
   $('optMinArea').value = o.min_area ?? '';
   $('optSmooth').value = o.smooth || 'auto';
 }
+function setTool(t) {
+  state.tool = t;
+  $('toolBox').classList.toggle('on', t === 'box');
+  $('toolLasso').classList.toggle('on', t === 'lasso');
+  canvas.style.cursor = 'crosshair';
+}
+$('toolBox').addEventListener('click', () => setTool('box'));
+$('toolLasso').addEventListener('click', () => setTool('lasso'));
+function fromApi(r) { return { id: r.id || uid(), name: r.name || '', kind: r.kind === 'rect' ? 'rect' : 'polygon', points: r.points.map((p) => [p[0], p[1]]) }; }
 
-async function open(id) {
-  if (state.dirty && !confirm('Discard unsaved box edits?')) return;
+async function openEntry(id) {
+  if (state.dirty && !confirm('Discard unsaved region edits?')) return;
   say('opening…');
   try {
     const entries = await api('/api/library');
@@ -172,15 +234,16 @@ async function open(id) {
     await img.decode();
     const data = await api(`/api/library/${id}/boxes`);
     state.img = img;
-    state.boxes = data.boxes.map((b) => ({ ...b }));
-    state.selected = -1; state.dirty = false; state.mode = data.mode;
+    state.regions = data.regions.map(fromApi);
+    state.selected = -1; state.vertex = -1; state.dirty = false; state.mode = data.mode;
+    $('save').textContent = 'Save boxes';
     applySettings(data.options);
     $('empty').hidden = true; canvas.hidden = false;
     $('redetect').disabled = $('save').disabled = $('render').disabled = false;
     $('results').classList.remove('on');
     fit(); draw();
-    say(`${state.entry.name}: ${state.boxes.length} box${state.boxes.length === 1 ? '' : 'es'} (${data.mode})`);
-    canvas.focus();
+    say(`${state.entry.name}: ${state.regions.length} region${state.regions.length === 1 ? '' : 's'} (${data.mode})`);
+    canvas.focus({ preventScroll: true });
   } catch (e) { say('could not open: ' + e.message, true); }
 }
 
@@ -201,8 +264,8 @@ function toImg(ev) {
   const r = canvas.getBoundingClientRect();
   return { x: (ev.clientX - r.left) / state.scale, y: (ev.clientY - r.top) / state.scale };
 }
-function handles(b) {
-  const s = state.scale;
+function rectHandles(reg) {
+  const s = state.scale, b = bbox(reg);
   const x0 = b.x * s, y0 = b.y * s, x1 = (b.x + b.w) * s, y1 = (b.y + b.h) * s, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
   return [['nw', x0, y0], ['n', xm, y0], ['ne', x1, y0], ['e', x1, ym], ['se', x1, y1], ['s', xm, y1], ['sw', x0, y1], ['w', x0, ym]];
 }
@@ -212,60 +275,90 @@ function draw() {
   ctx.setTransform(d, 0, 0, d, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(state.img, 0, 0, state.img.width * s, state.img.height * s);
-  state.boxes.forEach((b, i) => {
+  state.regions.forEach((reg, i) => {
     const sel = i === state.selected;
-    const x = b.x * s, y = b.y * s, w = b.w * s, h = b.h * s;
-    if (sel) { ctx.fillStyle = 'rgba(47,111,219,.10)'; ctx.fillRect(x, y, w, h); }
+    ctx.beginPath();
+    reg.points.forEach(([x, y], k) => (k ? ctx.lineTo(x * s, y * s) : ctx.moveTo(x * s, y * s)));
+    ctx.closePath();
+    if (sel) { ctx.fillStyle = 'rgba(47,111,219,.10)'; ctx.fill(); }
     ctx.lineWidth = sel ? 2.5 : 1.25;
     ctx.strokeStyle = sel ? '#2f6fdb' : '#c8321e';
-    ctx.strokeRect(x + .5, y + .5, w, h);
-    const label = String(i).padStart(2, '0') + (b.name ? ' ' + b.name : '');
+    ctx.stroke();
+    const b = bbox(reg), x = b.x * s, y = b.y * s;
+    const label = String(i).padStart(2, '0') + (reg.name ? ' ' + reg.name : '') + (reg.kind === 'polygon' ? ' ◌' : '');
     ctx.font = '11px system-ui, sans-serif';
-    const tw = ctx.measureText(label).width + 8;
+    const tw = ctx.measureText(label).width + 8, ly = y - 16 < 0 ? y : y - 16;
     ctx.fillStyle = sel ? '#2f6fdb' : '#c8321e';
-    ctx.fillRect(x, y - 16 < 0 ? y : y - 16, tw, 16);
+    ctx.fillRect(x, ly, tw, 16);
     ctx.fillStyle = '#fff';
-    ctx.fillText(label, x + 4, (y - 16 < 0 ? y : y - 16) + 12);
+    ctx.fillText(label, x + 4, ly + 12);
     if (sel) {
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5;
-      for (const [, hx, hy] of handles(b)) { ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE); ctx.strokeRect(hx - HANDLE / 2 + .5, hy - HANDLE / 2 + .5, HANDLE - 1, HANDLE - 1); }
+      ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5;
+      if (reg.kind === 'rect') {
+        ctx.fillStyle = '#fff';
+        for (const [, hx, hy] of rectHandles(reg)) { ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE); ctx.strokeRect(hx - HANDLE / 2 + .5, hy - HANDLE / 2 + .5, HANDLE - 1, HANDLE - 1); }
+      } else {
+        reg.points.forEach(([px, py], k) => {
+          ctx.fillStyle = k === state.vertex ? '#2f6fdb' : '#fff';
+          ctx.beginPath(); ctx.arc(px * s, py * s, HANDLE / 2 + 1, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        });
+      }
     }
   });
+  if (state.drag && state.drag.mode === 'lasso' && state.drag.path.length > 1) {
+    ctx.beginPath();
+    state.drag.path.forEach(([x, y], k) => (k ? ctx.lineTo(x * s, y * s) : ctx.moveTo(x * s, y * s)));
+    ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+  }
 }
 
-function hitHandle(b, p) {
-  for (const [name, hx, hy] of handles(b)) if (Math.abs(p.x * state.scale - hx) <= HANDLE && Math.abs(p.y * state.scale - hy) <= HANDLE) return name;
+function hitRectHandle(reg, p) {
+  for (const [name, hx, hy] of rectHandles(reg)) if (Math.abs(p.x * state.scale - hx) <= HANDLE && Math.abs(p.y * state.scale - hy) <= HANDLE) return name;
   return null;
 }
-function hitBox(p) {
+function hitVertex(reg, p) {
+  const s = state.scale;
+  for (let k = 0; k < reg.points.length; k++) if (Math.hypot((p.x - reg.points[k][0]) * s, (p.y - reg.points[k][1]) * s) <= HANDLE) return k;
+  return -1;
+}
+function hitEdge(reg, p) {  // index i such that the edge i -> i+1 is within a few px; -1 otherwise
+  const s = state.scale, P = reg.points;
+  for (let i = 0; i < P.length; i++) {
+    const [ax, ay] = P[i], [bx, by] = P[(i + 1) % P.length];
+    const l = (bx - ax) ** 2 + (by - ay) ** 2; if (!l) continue;
+    let t = ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / l; t = Math.max(0, Math.min(1, t));
+    if (Math.hypot(p.x - (ax + t * (bx - ax)), p.y - (ay + t * (by - ay))) * s <= 5) return i;
+  }
+  return -1;
+}
+function hitRegion(p) {
   let best = -1, bestArea = Infinity;
-  state.boxes.forEach((b, i) => {
-    if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h && b.w * b.h < bestArea) { best = i; bestArea = b.w * b.h; }
-  });
+  state.regions.forEach((reg, i) => { if (inside(reg, p.x, p.y)) { const a = area(reg); if (a < bestArea) { best = i; bestArea = a; } } });
   return best;
 }
 function cursorFor(h) {
   return { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h] || 'move';
 }
 function setDirty() { state.dirty = true; $('save').textContent = 'Save boxes *'; }
-function clampBox(b) {
-  const W = state.img.width, H = state.img.height;
-  b.x = Math.max(0, Math.min(b.x, W - 1)); b.y = Math.max(0, Math.min(b.y, H - 1));
-  b.w = Math.max(1, Math.min(b.w, W - b.x)); b.h = Math.max(1, Math.min(b.h, H - b.y));
-  return b;
-}
+function select(i, vertex = -1) { state.selected = i; state.vertex = vertex; }
 
 canvas.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0 || !state.img) return;
-  canvas.focus();
+  canvas.focus({ preventScroll: true });
   const p = toImg(ev);
-  const sel = state.boxes[state.selected];
-  const h = sel ? hitHandle(sel, p) : null;
-  if (h) { state.drag = { mode: 'resize', handle: h, start: p, orig: { ...sel } }; }
-  else {
-    const i = hitBox(p);
-    if (i >= 0) { state.selected = i; state.drag = { mode: 'move', start: p, orig: { ...state.boxes[i] } }; }
-    else { state.selected = -1; state.drag = { mode: 'create', start: p, orig: null }; }
+  const sel = state.regions[state.selected];
+  if (state.tool === 'lasso') {
+    select(-1);
+    state.drag = { mode: 'lasso', path: [clampPoint([p.x, p.y])] };
+  } else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) {
+    state.drag = { mode: 'resize', handle: hitRectHandle(sel, p), start: p, orig: bbox(sel) };
+  } else if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) {
+    state.vertex = hitVertex(sel, p);
+    state.drag = { mode: 'vertex', start: p, orig: sel.points[state.vertex].slice() };
+  } else {
+    const i = hitRegion(p);
+    if (i >= 0) { select(i); state.drag = { mode: 'move', start: p, orig: state.regions[i].points.map((q) => q.slice()) }; }
+    else { select(-1); state.drag = { mode: 'create', start: p, reg: null }; }
   }
   canvas.setPointerCapture(ev.pointerId);
   draw();
@@ -274,31 +367,38 @@ canvas.addEventListener('pointermove', (ev) => {
   if (!state.img) return;
   const p = toImg(ev);
   if (!state.drag) {
-    const sel = state.boxes[state.selected];
-    const h = sel ? hitHandle(sel, p) : null;
-    canvas.style.cursor = h ? cursorFor(h) : (hitBox(p) >= 0 ? 'move' : 'crosshair');
+    const sel = state.regions[state.selected];
+    if (state.tool === 'lasso') canvas.style.cursor = 'crosshair';
+    else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) canvas.style.cursor = cursorFor(hitRectHandle(sel, p));
+    else if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) canvas.style.cursor = 'pointer';
+    else canvas.style.cursor = hitRegion(p) >= 0 ? 'move' : 'crosshair';
     return;
   }
   const d = state.drag, dx = p.x - d.start.x, dy = p.y - d.start.y;
   if (d.mode === 'move') {
-    const b = state.boxes[state.selected];
-    b.x = Math.round(d.orig.x + dx); b.y = Math.round(d.orig.y + dy);
-    clampBox(b); setDirty();
+    const reg = state.regions[state.selected];
+    reg.points = d.orig.map((q) => q.slice()); translate(reg, dx, dy); setDirty();
   } else if (d.mode === 'resize') {
-    const b = state.boxes[state.selected], o = d.orig;
+    const reg = state.regions[state.selected], o = d.orig;
     let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
     if (d.handle.includes('w')) x0 = o.x + dx;
     if (d.handle.includes('e')) x1 = o.x + o.w + dx;
     if (d.handle.includes('n')) y0 = o.y + dy;
     if (d.handle.includes('s')) y1 = o.y + o.h + dy;
-    b.x = Math.round(Math.min(x0, x1)); b.y = Math.round(Math.min(y0, y1));
-    b.w = Math.round(Math.max(4, Math.abs(x1 - x0))); b.h = Math.round(Math.max(4, Math.abs(y1 - y0)));
-    clampBox(b); setDirty();
+    const W = state.img.width, H = state.img.height;
+    const nx0 = Math.max(0, Math.min(x0, x1)), ny0 = Math.max(0, Math.min(y0, y1));
+    setRect(reg, nx0, ny0, Math.min(W - nx0, Math.max(4, Math.abs(x1 - x0))), Math.min(H - ny0, Math.max(4, Math.abs(y1 - y0))));
+    setDirty();
+  } else if (d.mode === 'vertex') {
+    const reg = state.regions[state.selected];
+    reg.points[state.vertex] = clampPoint([d.orig[0] + dx, d.orig[1] + dy]); setDirty();
   } else if (d.mode === 'create') {
-    if (!d.box) { d.box = { x: d.start.x, y: d.start.y, w: 1, h: 1, name: '' }; state.boxes.push(d.box); state.selected = state.boxes.length - 1; }
-    d.box.x = Math.round(Math.min(d.start.x, p.x)); d.box.y = Math.round(Math.min(d.start.y, p.y));
-    d.box.w = Math.round(Math.abs(dx)); d.box.h = Math.round(Math.abs(dy));
-    clampBox(d.box);
+    if (!d.reg) { d.reg = { id: uid(), name: '', kind: 'rect', points: rectPoints(d.start.x, d.start.y, 1, 1) }; state.regions.push(d.reg); select(state.regions.length - 1); }
+    const x = Math.max(0, Math.min(d.start.x, p.x)), y = Math.max(0, Math.min(d.start.y, p.y));
+    setRect(d.reg, x, y, Math.min(state.img.width - x, Math.abs(dx)), Math.min(state.img.height - y, Math.abs(dy)));
+  } else if (d.mode === 'lasso') {
+    const last = d.path[d.path.length - 1];
+    if (Math.hypot(p.x - last[0], p.y - last[1]) * state.scale >= 2) d.path.push(clampPoint([p.x, p.y]));
   }
   draw();
 });
@@ -307,8 +407,11 @@ function endDrag(ev) {
   if (!d) return;
   state.drag = null;
   if (d.mode === 'create') {
-    if (d.box && (d.box.w < 8 || d.box.h < 8)) { state.boxes.pop(); state.selected = -1; }
-    else if (d.box) setDirty();
+    if (d.reg) { const b = bbox(d.reg); if (b.w < 8 || b.h < 8) { state.regions.pop(); select(-1); } else setDirty(); }
+  } else if (d.mode === 'lasso') {
+    const pts = simplify(d.path, 1.5 / state.scale);
+    const reg = { id: uid(), name: '', kind: 'polygon', points: pts };
+    if (pts.length >= 3 && area(reg) >= 64) { state.regions.push(reg); select(state.regions.length - 1); setDirty(); }
   }
   try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
   draw();
@@ -317,26 +420,41 @@ canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', endDrag);
 
 canvas.addEventListener('dblclick', (ev) => {
-  const i = hitBox(toImg(ev));
+  const p = toImg(ev);
+  const sel = state.regions[state.selected];
+  if (sel && sel.kind === 'polygon' && hitVertex(sel, p) < 0) {
+    const e = hitEdge(sel, p);
+    if (e >= 0) { sel.points.splice(e + 1, 0, clampPoint([p.x, p.y])); state.vertex = e + 1; setDirty(); draw(); return; }
+  }
+  const i = hitRegion(p);
   if (i < 0) return;
-  state.selected = i;
-  const name = prompt('Name for box ' + String(i).padStart(2, '0'), state.boxes[i].name || '');
+  select(i);
+  const name = prompt('Name for region ' + String(i).padStart(2, '0'), state.regions[i].name || '');
   if (name === null) return;
-  state.boxes[i].name = name.trim();
+  state.regions[i].name = name.trim();
   setDirty(); draw();
 });
 
 canvas.addEventListener('keydown', (ev) => {
   if (!state.img) return;
-  const b = state.boxes[state.selected];
-  if (ev.key === 'Escape') { state.selected = -1; draw(); return; }
-  if (!b) return;
+  if (ev.key === 'b' || ev.key === 'B') { setTool('box'); return; }
+  if (ev.key === 'l' || ev.key === 'L') { setTool('lasso'); return; }
+  const reg = state.regions[state.selected];
+  if (ev.key === 'Escape') { select(-1); draw(); return; }
+  if (!reg) return;
   if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    state.boxes.splice(state.selected, 1); state.selected = -1; setDirty(); draw(); ev.preventDefault(); return;
+    if (reg.kind === 'polygon' && state.vertex >= 0 && reg.points.length > 3) { reg.points.splice(state.vertex, 1); state.vertex = -1; }
+    else { state.regions.splice(state.selected, 1); select(-1); }
+    setDirty(); draw(); ev.preventDefault(); return;
   }
   const step = ev.shiftKey ? 10 : 1;
   const nudge = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
-  if (nudge) { b.x += nudge[0]; b.y += nudge[1]; clampBox(b); setDirty(); draw(); ev.preventDefault(); }
+  if (nudge) { translate(reg, nudge[0], nudge[1]); setDirty(); draw(); ev.preventDefault(); }
+});
+addEventListener('keydown', (ev) => {
+  if (ev.target === canvas || /INPUT|SELECT|TEXTAREA/.test(ev.target.tagName)) return;
+  if (ev.key === 'b' || ev.key === 'B') setTool('box');
+  if (ev.key === 'l' || ev.key === 'L') setTool('lasso');
 });
 
 // ------------------------------------------------------------------ actions
@@ -345,32 +463,33 @@ $('redetect').addEventListener('click', async () => {
   say('detecting…');
   try {
     const data = await api(`/api/library/${state.entry.id}/detect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings()) });
-    state.boxes = data.boxes; state.selected = -1; state.mode = data.mode; setDirty(); draw();
-    say(`detected ${data.boxes.length} box${data.boxes.length === 1 ? '' : 'es'} (${data.mode}) - not saved yet`);
+    state.regions = data.regions.map(fromApi);
+    select(-1); state.mode = data.mode; setDirty(); draw();
+    say(`detected ${data.regions.length} region${data.regions.length === 1 ? '' : 's'} (${data.mode}) - not saved yet`);
   } catch (e) { say('detect failed: ' + e.message, true); }
 });
 
 async function saveBoxes() {
-  const body = { boxes: state.boxes, options: settings() };
+  const body = { regions: state.regions, options: settings() };
   await api(`/api/library/${state.entry.id}/boxes`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   state.dirty = false; $('save').textContent = 'Save boxes';
 }
 $('save').addEventListener('click', async () => {
-  try { await saveBoxes(); say(`saved ${state.boxes.length} boxes`); loadLibrary(); } catch (e) { say('save failed: ' + e.message, true); }
+  try { await saveBoxes(); say(`saved ${state.regions.length} regions`); loadLibrary(); } catch (e) { say('save failed: ' + e.message, true); }
 });
 
 $('render').addEventListener('click', async () => {
   if (!state.entry) return;
-  if (!state.boxes.length) { say('nothing to render: add a box first', true); return; }
+  if (!state.regions.length) { say('nothing to render: add a region first', true); return; }
   $('render').disabled = true;
   try {
     await saveBoxes();
-    const body = { boxes: state.boxes, ...settings() };
+    const body = { regions: state.regions, ...settings() };
     const job = await api(`/api/library/${state.entry.id}/render`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     state.job = job.job_id;
     $('results').classList.add('on'); $('viewer').hidden = true; $('viewer').src = 'about:blank';
     $('download').textContent = ''; $('pieces').textContent = '';
-    $('progress').textContent = `rendering 0 / ${state.boxes.length}`;
+    $('progress').textContent = `rendering 0 / ${state.regions.length}`;
     $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
     poll();
   } catch (e) { say('render failed: ' + e.message, true); $('render').disabled = false; }
@@ -387,8 +506,8 @@ async function poll() {
   if (job.status === 'done') {
     $('viewer').src = job.preview; $('viewer').hidden = false;
     const a = document.createElement('a'); a.href = job.download; a.textContent = 'Download outputs (.zip)'; $('download').replaceChildren(a);
-    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  speckle ${q.speckle.toFixed(2).padStart(6)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
-    $('pieces').textContent = ['id                     size        triangles  speckle  quality', ...rows].join('\n');
+    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${(q.kind || 'rect').padEnd(8)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  speckle ${q.speckle.toFixed(2).padStart(6)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
+    $('pieces').textContent = ['id                     kind     size        triangles  speckle  quality', ...rows].join('\n');
     $('render').disabled = false;
     say('render done');
     loadLibrary();

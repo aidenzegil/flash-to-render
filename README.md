@@ -29,6 +29,8 @@ pip install -e ".[dev]"        # or: uv pip install -e ".[dev]"
 
 Dependencies: opencv-python-headless, numpy, pillow, potracer (pure-Python
 potrace), mapbox_earcut, shapely, trimesh. No compilers, no system potrace.
+The optional `[server]` extra adds FastAPI, uvicorn and python-multipart for
+the web app; `[dev]` includes it plus pytest.
 
 ## Usage
 
@@ -66,6 +68,44 @@ piece; force it with `--single`, or force segmentation with `--sheet`.
 the pieces in 3D on a neutral background, orbit controls, and a plain dropdown
 to isolate one piece.
 
+## Review boxes in the browser
+
+```
+pip install -e ".[server]"      # FastAPI + uvicorn, only needed for the web app
+flash-to-render serve           # opens http://127.0.0.1:8766/
+```
+
+`serve` is a local one-page app for checking and fixing the segmentation
+before rendering. Pick a sheet from the library (it starts with the three
+example sheets) or upload a new image; the auto-detected boxes are drawn on
+the full-size image in an editor:
+
+- **Box** tool (`B`): drag a box to move it, drag its handles to resize, drag
+  on empty canvas to add one
+- **Lasso** tool (`L`): click-and-drag a freehand outline around a design; it
+  closes on release. Polygons get vertex handles (drag to adjust, double-click
+  an edge to insert a vertex, Delete on a selected vertex removes it). Ink from
+  a neighbouring design inside the polygon's bounding box is excluded from
+  the render.
+- double-click a region to rename it (the name becomes part of the piece id
+  and filenames, e.g. `03-skull.glb`)
+- Delete / Backspace removes the selected region, arrow keys nudge it (shift =
+  10 px), Esc deselects
+- **Re-detect** re-runs the auto-segmentation with the settings row (merge
+  kernel, min area, smoothing); **Save boxes** persists them; **Render** runs
+  trace → mesh → export on the *edited* boxes, shows progress, then embeds the
+  3D viewer and offers a zip of the outputs.
+
+The library lives in `~/.flash-to-render/library/` (`--library DIR` to change
+it): each entry is the original image plus a `meta.json` with the current
+regions (`{"id", "name", "kind": "rect" | "polygon", "points": [[x, y], ...]}`
+in image pixels), so edits survive restarts. A lone design opens with a single
+box.
+
+The same operations are available as a JSON API (`/api/library`,
+`/api/library/{id}/boxes`, `/api/library/{id}/detect`,
+`/api/library/{id}/render` → `/api/jobs/{id}`), see `server.py`.
+
 ### Output units
 
 glTF is in metres; the default `--scale 0.001` makes one source pixel one
@@ -74,12 +114,14 @@ scale and every bbox in source pixels.
 
 ## How it works
 
-1. **Segment** (`segment.py`) - threshold the sheet into an ink mask, dilate it
-   so the strokes of one design touch, take connected components, then crop
-   each component out of the *undilated* mask (neighbours that bleed into the
-   bounding box are masked away). Small components close to a neighbour are
-   absorbed so the words of a caption stay together. Pieces are numbered in
-   reading order.
+1. **Segment** (`segment.py`) - `detect_boxes()` thresholds the sheet into an
+   ink mask, dilates it so the strokes of one design touch, takes connected
+   components and returns their boxes in reading order (small components close
+   to a neighbour are absorbed so the words of a caption stay together).
+   `crop_pieces()` then cuts a piece per box, auto-detected or hand-edited:
+   each ink component goes to the box holding most of it, so neighbours that
+   bleed into a box are masked away while several boxes can split one merged
+   design.
 2. **Trace** (`trace.py`) - potrace the crop into Bezier outlines, sample them
    to polylines and simplify. Speckly (halftone / grey-shaded) pieces get a
    blur + re-threshold + morphological close first; crisp line art is left
@@ -155,13 +197,14 @@ for r in result.pieces:
 ## Development
 
 ```
-pytest            # runs the full pipeline on the three example sheets
+pytest            # runs the full pipeline on the three example sheets + the web API
 ```
 
 The suite checks piece counts (within a tolerance), that no piece traced as a
 card (polarity guard), that every extrusion is a closed surface (each edge
-shared by exactly two triangles), wall normals, the y flip, and that every GLB
-loads in trimesh and is watertight.
+shared by exactly two triangles), wall normals, the y flip, that every GLB
+loads in trimesh and is watertight, and the web API end to end (seeded
+library, detection, box round-trips, rendering hand-edited and renamed boxes).
 
 ## License
 
