@@ -4,14 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>flash-to-render preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Josefin+Sans:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
-  html, body { margin: 0; height: 100%; background: #b9b9b6; color: #222; font: 13px/1.4 system-ui, sans-serif; }
+  :root { --paper: #ece5d6; --paper-deep: #d9cfbb; --ink: #2a2622; --ink-faint: #9a9081; }
+  html, body { margin: 0; height: 100%; background: var(--paper-deep); color: var(--ink);
+               font: 400 13px/1.4 'Josefin Sans', 'Avenir Next', system-ui, sans-serif; }
   #stage { position: fixed; inset: 0; display: block; }
-  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; gap: 12px; align-items: center;
-         padding: 8px 12px; background: rgba(255,255,255,.7); backdrop-filter: blur(4px); }
-  #bar select { font: inherit; padding: 2px 6px; }
-  #bar .hint { opacity: .6; margin-left: auto; }
-  #status { position: fixed; bottom: 8px; left: 12px; opacity: .6; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; gap: 14px; align-items: center;
+         padding: 8px 14px; background: rgba(236,229,214,.86); backdrop-filter: blur(4px);
+         border-bottom: 1.5px solid var(--ink); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+  #bar strong { font-weight: 600; }
+  #bar label { display: flex; align-items: center; gap: 6px; }
+  #bar select { font: inherit; letter-spacing: .08em; padding: 2px 6px; color: var(--ink);
+                background: transparent; border: 1.5px solid var(--ink); border-radius: 999px; }
+  #bar input[type=checkbox] { accent-color: var(--ink); }
+  #bar .hint { color: var(--ink-faint); margin-left: auto; letter-spacing: .1em; white-space: nowrap; }
+  @media (max-width: 720px) { #bar .hint { display: none; } }
+  #status { position: fixed; bottom: 10px; left: 14px; color: var(--ink-faint);
+            font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -26,7 +38,7 @@
   <strong id="title">flash-to-render</strong>
   <label>piece <select id="pick"><option value="">all</option></select></label>
   <label><input type="checkbox" id="spin"> spin</label>
-  <span class="hint">drag to orbit, wheel to zoom, right-drag to pan</span>
+  <span class="hint">drag to orbit &middot; wheel to zoom</span>
 </div>
 <div id="status"></div>
 <script type="module">
@@ -39,7 +51,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xb9b9b6);
+scene.background = new THREE.Color(0xd9cfbb);
 const camera = new THREE.PerspectiveCamera(35, 1, 0.001, 1000);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;

@@ -11,6 +11,7 @@ FastAPI is only imported here, so the CLI and the pipeline work without the
 from __future__ import annotations
 
 import io
+import json
 import re
 import threading
 import time
@@ -23,6 +24,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from PIL import Image
 from pydantic import BaseModel
 
 from . import __version__
@@ -161,6 +163,7 @@ def _page(name: str) -> bytes:
 def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> FastAPI:
     library = Library(Path(library_dir), seed=seed)
     jobs: dict[str, Job] = {}
+    thumbs: dict[str, tuple[int, bytes]] = {}
     app = FastAPI(title="flash-to-render", version=__version__)
     app.state.library = library
     app.state.jobs = jobs
@@ -171,11 +174,53 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         except KeyError:
             raise HTTPException(404, f"no library entry {entry_id!r}") from None
 
+    def render_dirs(entry_id: str) -> list[Path]:
+        """Finished renders of an entry, newest first (a render is a folder with a manifest)."""
+        root = library.dir(entry_id) / "renders"
+        if not root.is_dir():
+            return []
+        done = [p for p in root.iterdir() if p.is_dir() and (p / "manifest.json").is_file()]
+        return sorted(done, key=lambda p: p.stat().st_mtime, reverse=True)
+
+    def adopt_render(entry_id: str, path: Path) -> Job | None:
+        """Re-attach a render left on disk by an earlier process so /api/jobs keeps serving it."""
+        job = jobs.get(path.name)
+        if job is not None:
+            return job
+        try:
+            manifest = json.loads((path / "manifest.json").read_text())
+        except (OSError, ValueError):
+            return None
+        pieces = manifest.get("pieces") or []
+        job = Job(
+            id=path.name,
+            entry_id=entry_id,
+            out_dir=path,
+            status="done",
+            done=len(pieces),
+            total=len(pieces),
+            pieces=pieces,
+            started=path.stat().st_mtime,
+        )
+        jobs[job.id] = job
+        return job
+
     def job_or_404(job_id: str) -> Job:
         job = jobs.get(job_id)
+        if job is None and re.fullmatch(r"[a-z0-9]{1,32}", job_id):
+            for entry in library.list():  # a render from a previous run of the server
+                path = library.dir(entry.id) / "renders" / job_id
+                if (path / "manifest.json").is_file():
+                    job = adopt_render(entry.id, path)
+                    break
         if job is None:
             raise HTTPException(404, f"no job {job_id!r}")
         return job
+
+    def summary(entry: Entry) -> dict[str, Any]:
+        """``Entry.summary()`` plus when this entry was last rendered (``None`` if never)."""
+        dirs = render_dirs(entry.id)
+        return {**entry.summary(), "last_render": dirs[0].stat().st_mtime if dirs else None, "render_count": len(dirs)}
 
     def ensure_boxes(entry: Entry, opts: DetectIn | None = None) -> Entry:
         """Run detection for an entry that has never been detected (or on demand) and persist it."""
@@ -198,7 +243,7 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
     # -- library
     @app.get("/api/library")
     def list_library() -> list[dict]:
-        return [e.summary() for e in library.list()]
+        return [summary(e) for e in library.list()]
 
     @app.post("/api/library/upload")
     async def upload(file: UploadFile = File(...), name: str = Form("")) -> dict:
@@ -208,11 +253,11 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         entry = ensure_boxes(entry)
-        return entry.summary()
+        return summary(entry)
 
     @app.get("/api/library/{entry_id}")
     def get_entry(entry_id: str) -> dict:
-        return entry_or_404(entry_id).summary()
+        return summary(entry_or_404(entry_id))
 
     @app.delete("/api/library/{entry_id}")
     def delete_entry(entry_id: str) -> dict:
@@ -224,6 +269,48 @@ def create_app(library_dir: Path | str = DEFAULT_LIBRARY, seed: bool = True) -> 
     def get_image(entry_id: str) -> FileResponse:
         entry = entry_or_404(entry_id)
         return FileResponse(library.image_path(entry), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/library/{entry_id}/thumb")
+    def get_thumb(entry_id: str) -> Response:
+        """A small WebP of the sheet for the library rail (rendered on demand, cached in memory)."""
+        entry = entry_or_404(entry_id)
+        path = library.image_path(entry)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            raise HTTPException(404, entry_id) from None
+        cached = thumbs.get(entry.id)
+        if cached is None or cached[0] != stamp:
+            with Image.open(path) as im:
+                im = im.convert("RGB")
+                im.thumbnail((360, 360), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, format="WEBP", quality=82)
+            cached = (stamp, buf.getvalue())
+            thumbs[entry.id] = cached
+        return Response(cached[1], media_type="image/webp", headers={"Cache-Control": "max-age=300"})
+
+    @app.get("/api/library/{entry_id}/renders")
+    def list_renders(entry_id: str) -> list[dict]:
+        """Past renders of this entry, newest first; ``GET /api/jobs/{id}`` has the pieces."""
+        entry = entry_or_404(entry_id)
+        out: list[dict] = []
+        for path in render_dirs(entry.id):
+            job = adopt_render(entry.id, path)
+            if job is None:
+                continue
+            out.append(
+                {
+                    "id": job.id,
+                    "entry_id": entry.id,
+                    "status": job.status,
+                    "created": job.started,
+                    "piece_count": len(job.pieces),
+                    "preview": f"/api/jobs/{job.id}/preview/",
+                    "download": f"/api/jobs/{job.id}/download.zip",
+                }
+            )
+        return out
 
     @app.get("/api/library/{entry_id}/regions.json")
     def export_regions(entry_id: str) -> Response:

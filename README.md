@@ -68,42 +68,80 @@ piece; force it with `--single`, or force segmentation with `--sheet`.
 the pieces in 3D on a neutral background, orbit controls, and a plain dropdown
 to isolate one piece.
 
-## Review boxes in the browser
+## The editor (`flash-to-render serve`)
 
 ```
 pip install -e ".[server]"      # FastAPI + uvicorn, only needed for the web app
 flash-to-render serve           # opens http://127.0.0.1:8766/
 ```
 
-`serve` is a local one-page app for checking and fixing the segmentation
-before rendering. Pick a sheet from the library (it starts with the three
-example sheets) or upload a new image; the auto-detected boxes are drawn on
-the full-size image in an editor:
+`serve` is a local workspace for checking and fixing the segmentation before
+rendering: a **library rail** on the left (thumbnail, name, region count, when
+it was last rendered), the **sheet** in the middle, and an **inspector** on the
+right with the region list, the selected region, the render settings and the
+outputs. Both rails collapse (`[` and `]`, and automatically on a narrow
+window).
 
-- **Box** tool (`B`): drag a box to move it, drag its handles to resize, drag
-  on empty canvas to add one
-- **Lasso** tool (`L`): click-and-drag a freehand outline around a design; it
-  closes on release. Polygons get vertex handles (drag to adjust, double-click
-  an edge to insert a vertex, Delete on a selected vertex removes it). Ink from
-  a neighbouring design inside the polygon's bounding box is excluded from
-  the render.
-- double-click a region to rename it (the name becomes part of the piece id
-  and filenames, e.g. `03-skull.glb`)
-- Delete / Backspace removes the selected region, arrow keys nudge it (shift =
-  10 px), Esc deselects
-- **Re-detect** re-runs the auto-segmentation with the settings row (merge
-  kernel, min area, smoothing); **Save boxes** persists them; **Render** runs
-  trace → mesh → export on the *edited* boxes, shows progress, then embeds the
-  3D viewer and offers a zip of the outputs.
+**Getting a sheet in.** Drop an image anywhere on the library rail, paste one
+from the clipboard, or click the drop zone. Upload shows progress, then the
+auto-detected regions.
+
+**Editing regions.** `V` select, `R` rectangle, `L` lasso. A rectangle has
+corner and edge handles; a lasso has vertex handles - drag one to adjust,
+double-click an edge to insert one, alt-click one to delete it. Ink from a
+neighbouring design inside a polygon's bounding box is excluded from the
+render. Hovering highlights a region, selecting fills it; the numbered labels
+stay the same size at any zoom. The region list mirrors the canvas: click to
+select, double-click to rename inline, drag to reorder, and **Sheet order**
+puts the list back in reading order (top to bottom, left to right - the order
+the output files are numbered in).
+
+**Everything autosaves.** Region edits go back to the library on a debounced
+PUT; the header says Unsaved / Saving / Saved. `⌘S` forces it. Deleting a sheet
+or a region confirms inline and a deleted region can be undone from its toast.
+
+**Rendering.** **Render** (or `↵`) runs trace → mesh → export on the current
+regions with a progress bar, then shows every piece as an ink-on-paper PNG with
+its fidelity score, triangle count and quality flag, one-click PNG / SVG / GLB
+downloads, a zip of the lot, and a 3D view of the whole sheet in the centre
+pane. Reopening a sheet brings its last render back; the picker at the top of
+Outputs has the earlier ones.
+
+### Keyboard
+
+| | |
+|---|---|
+| `V` / `R` / `L` | select · rectangle · lasso |
+| `F` | fit the sheet to the window |
+| wheel / pinch | zoom around the pointer |
+| space + drag, middle mouse | pan (or drag empty paper with Select) |
+| `1` … `9` | jump to region N |
+| arrows | nudge 1 px (`Shift` = 10 px) |
+| `Delete` | remove the selected region |
+| double-click | on an edge: insert a lasso vertex · on a region: rename it |
+| `Alt`-click | delete a lasso vertex |
+| `Esc` | cancel the draw in progress, then deselect |
+| `⌘Z` / `Ctrl Z`, `⇧⌘Z` | undo / redo region edits |
+| `⌘S` | save now |
+| `↵` | render |
+| `[` / `]` | collapse the library / inspector rail |
+| `?` | shortcut sheet |
+
+**Re-detect** re-runs the auto-segmentation with the settings behind the gear
+(merge kernel, min area, threshold, smoothing, fidelity, stamp, depth, relief);
+**Suggest names** fills in unnamed regions; **Export JSON** downloads the
+regions in the same format as `examples/<id>.regions.json`.
 
 The library lives in `~/.flash-to-render/library/` (`--library DIR` to change
 it): each entry is the original image plus a `meta.json` with the current
 regions (`{"id", "name", "kind": "rect" | "polygon", "points": [[x, y], ...]}`
 in image pixels), so edits survive restarts. A lone design opens with a single
-box.
+box. Renders land in `<entry>/renders/<job>/` and are picked up again after a
+restart.
 
 The same operations are available as a JSON API (`/api/library`,
 `/api/library/{id}/boxes`, `/api/library/{id}/detect`,
+`/api/library/{id}/thumb`, `/api/library/{id}/renders`,
 `/api/library/{id}/render` → `/api/jobs/{id}`), see `server.py`.
 
 ### Output units

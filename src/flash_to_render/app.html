@@ -4,128 +4,439 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>flash-to-render</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bowlby+One+SC&family=Josefin+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root { --ink: #1d1d1f; --muted: #6b6b6f; --line: #d6d6d3; --bg: #f3f3f1; --panel: #fbfbfa; --accent: #c8321e; --focus: #2f6fdb; }
+  :root {
+    --paper: #ece5d6;
+    --paper-deep: #d9cfbb;
+    --ink: #2a2622;
+    --ink-soft: #5c554c;
+    --ink-faint: #9a9081;
+    --rule: #c6bba4;
+    --topbar: 46px;
+    --rail-l: 272px;
+    --rail-r: 340px;
+    --ui: 'Josefin Sans', 'Avenir Next', 'Segoe UI', system-ui, sans-serif;
+    --display: 'Bowlby One SC', 'Josefin Sans', Impact, sans-serif;
+  }
+
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, sans-serif; }
-  body { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
-  header { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 14px; margin: 0; }
-  header #status { color: var(--muted); }
-  header #status.err { color: var(--accent); }
-  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; overflow: auto; }
-  aside h2, main h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
-  #upload { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-  #upload input[type=text], #settings input, #settings select, button { font: inherit; }
-  #upload input[type=text] { padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; }
-  button { padding: 4px 10px; border: 1px solid #b9b9b5; border-radius: 3px; background: #fff; cursor: pointer; }
-  button:hover { border-color: #888; }
-  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
-  button:disabled { opacity: .5; cursor: default; }
-  #tools { display: inline-flex; border: 1px solid #b9b9b5; border-radius: 3px; overflow: hidden; }
-  #tools button { border: 0; border-radius: 0; }
-  #tools button + button { border-left: 1px solid #b9b9b5; }
-  #tools button.on { background: var(--ink); color: #fff; }
-  #library { list-style: none; margin: 0; padding: 0; }
-  #library li { padding: 6px 8px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; }
-  #library li:hover { background: #ededea; }
-  #library li.active { background: #e3e3df; }
-  #library li .meta { color: var(--muted); font-size: 11px; }
-  main { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 12px 14px; gap: 12px; }
-  #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-  #settings { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-  #settings label { display: flex; align-items: center; gap: 4px; }
-  #settings input[type=number] { width: 64px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 3px; }
-  #settings select { padding: 3px 4px; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
-  #hint { color: var(--muted); font-size: 12px; }
-  #stage { position: relative; }
-  #stage canvas { display: block; background: #fff; border: 1px solid var(--line); outline: none; cursor: crosshair; touch-action: none; }
-  #stage canvas:focus { border-color: var(--focus); }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font: 400 14px/1.5 var(--ui);
+    display: grid; grid-template-rows: var(--topbar) 1fr;
+    height: 100vh; height: 100dvh; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
   [hidden] { display: none !important; }
-  #empty { color: var(--muted); padding: 40px 0; }
-  #results { display: none; flex-direction: column; gap: 8px; }
-  #results.on { display: flex; }
-  #viewer { width: 100%; height: 560px; border: 1px solid var(--line); background: #b9b9b6; }
-  #pieces { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre; margin: 0; overflow-x: auto; }
-  #progress { color: var(--muted); }
-  a { color: var(--focus); }
+  ::selection { background: var(--ink); color: var(--paper); }
+  :focus { outline: none; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 2px; }
+
+  /* ------------------------------------------------------------- typography */
+  .label, h2, .rail-head, .badge, .seg button, .pill, .link {
+    text-transform: uppercase; letter-spacing: .14em; font-weight: 600;
+  }
+  h2, .rail-head { font-size: 10px; color: var(--ink-faint); margin: 0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
+  .dim { color: var(--ink-soft); }
+  .faint { color: var(--ink-faint); }
+  .tiny { font-size: 11px; }
+
+  /* ------------------------------------------------------------- controls */
+  button, input, select, textarea { font: inherit; color: inherit; }
+  .pill {
+    font-size: 10.5px; padding: 6px 14px 5px; border-radius: 999px;
+    border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+    box-shadow: 3px 3px 0 var(--ink); cursor: pointer;
+    transition: transform .09s ease, box-shadow .09s ease, background .09s ease;
+    white-space: nowrap;
+  }
+  .pill:hover:not(:disabled) { background: var(--paper-deep); }
+  .pill:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: 0 0 0 var(--ink); }
+  .pill.solid { background: var(--ink); color: var(--paper); }
+  .pill.solid:hover:not(:disabled) { background: #3a352f; }
+  .pill.big { font-size: 12px; padding: 11px 20px 9px; width: 100%; }
+  .pill:disabled { opacity: .35; cursor: not-allowed; box-shadow: 2px 2px 0 var(--ink-faint); border-color: var(--ink-faint); }
+  .pill.ghost { box-shadow: none; border-color: var(--rule); }
+  .pill.ghost:hover:not(:disabled) { border-color: var(--ink); }
+
+  .seg { display: inline-flex; border: 1.5px solid var(--ink); border-radius: 999px; overflow: hidden; box-shadow: 3px 3px 0 var(--ink); }
+  .seg button { font-size: 10.5px; padding: 6px 13px 5px; border: 0; background: var(--paper); cursor: pointer; }
+  .seg button + button { border-left: 1.5px solid var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .seg button:hover:not([aria-pressed="true"]) { background: var(--paper-deep); }
+
+  .icon-btn {
+    width: 28px; height: 28px; display: grid; place-items: center; border-radius: 999px;
+    border: 1.5px solid transparent; background: none; cursor: pointer; color: var(--ink-soft);
+    font-size: 13px; line-height: 1;
+  }
+  .icon-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+  input[type=text], input[type=number], select {
+    background: transparent; border: 0; border-bottom: 1.5px solid var(--rule);
+    padding: 3px 2px; border-radius: 0; width: 100%; min-width: 0;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus { border-bottom-color: var(--ink); }
+  select { -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 14px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%), linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+    background-position: right 5px center, right 1px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat; }
+  input[type=checkbox] { accent-color: var(--ink); width: 14px; height: 14px; }
+  .field { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; padding: 3px 0; }
+  .field > .label { font-size: 9.5px; color: var(--ink-faint); }
+  .field > :last-child { width: 96px; }
+  .field.check > :last-child { width: auto; }
+
+  a.link { color: var(--ink); text-decoration: none; font-size: 9.5px; border-bottom: 1.5px solid var(--rule); padding-bottom: 1px; }
+  a.link:hover { border-bottom-color: var(--ink); }
+
+  .badge { font-size: 9px; padding: 2px 7px 1px; border-radius: 999px; border: 1.5px solid currentColor; }
+  .badge.ok { color: var(--ink-soft); }
+  .badge.warn { color: var(--ink); background: var(--paper-deep); }
+
+  /* ------------------------------------------------------------- topbar */
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 0 12px;
+    border-bottom: 1.5px solid var(--ink); background: var(--paper); z-index: 40;
+  }
+  #wordmark { font: 400 15px/1 var(--display); letter-spacing: .01em; margin: 0 4px 0 0; white-space: nowrap; }
+  #crumb { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+  #crumbName { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #crumbMeta { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; }
+  .spacer { flex: 1 1 auto; }
+  #saveState { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); display: flex; align-items: center; gap: 6px; }
+  #saveState::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--rule); }
+  #saveState[data-s="dirty"]::before { background: var(--ink-faint); }
+  #saveState[data-s="saving"]::before { background: var(--ink-soft); animation: pulse 1s ease-in-out infinite; }
+  #saveState[data-s="saved"]::before { background: var(--ink); }
+  #saveState[data-s="error"] { color: var(--ink); }
+  #saveState[data-s="error"]::before { background: var(--ink); animation: pulse .8s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  /* ------------------------------------------------------------- shell */
+  #shell { display: grid; grid-template-columns: var(--rail-l) minmax(0, 1fr) var(--rail-r); min-height: 0; position: relative; }
+  body.left-closed { --rail-l: 0px; }
+  body.right-closed { --rail-r: 0px; }
+  aside { background: var(--paper); overflow: hidden; display: flex; }
+  aside > .inner { display: flex; flex-direction: column; min-height: 0; overflow: hidden auto; padding: 14px 14px 28px; gap: 14px; }
+  /* explicit columns: the rails go position:absolute when they float, and auto-placement would slide main into column 1 */
+  #left { grid-column: 1; border-right: 1.5px solid var(--ink); }
+  main { grid-column: 2; }
+  #right { grid-column: 3; border-left: 1.5px solid var(--ink); }
+  #left > .inner { width: 272px; }
+  #right > .inner { width: 340px; }
+
+  body.floating aside { position: absolute; top: 0; bottom: 0; z-index: 30; box-shadow: 6px 0 0 rgba(42, 38, 34, .12); }
+  body.floating #left { left: 0; }
+  body.floating #right { right: 0; box-shadow: -6px 0 0 rgba(42, 38, 34, .12); }
+  body.floating #shell { grid-template-columns: 0 minmax(0, 1fr) 0; }
+  body.floating.left-closed #left, body.floating.right-closed #right { display: none; }
+
+  .rail-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
+  .rail-head .spacer { flex: 1; }
+  section.block { display: flex; flex-direction: column; gap: 10px; }
+  section.block + section.block { border-top: 1.5px solid var(--rule); padding-top: 14px; }
+
+  /* ------------------------------------------------------------- library */
+  #dropzone { border: 1.5px dashed var(--rule); border-radius: 4px; padding: 14px 10px; text-align: center; color: var(--ink-faint); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
+  #dropzone:hover, body.dragging #dropzone { border-color: var(--ink); color: var(--ink); background: var(--paper-deep); }
+  body.dragging #left { background: var(--paper-deep); }
+  #uploadBar { height: 3px; background: var(--paper-deep); overflow: hidden; }
+  #uploadBar > i { display: block; height: 100%; background: var(--ink); width: 0; transition: width .15s linear; }
+
+  #library { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  #library li { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+    padding: 9px 4px; border-bottom: 1px solid var(--rule); cursor: pointer; position: relative; }
+  #library li:hover { background: var(--paper-deep); }
+  #library li[aria-current="true"] { background: var(--paper-deep); }
+  #library li[aria-current="true"]::before { content: ''; position: absolute; left: -14px; top: 0; bottom: 0; width: 4px; background: var(--ink); }
+  #library .thumb { width: 54px; height: 54px; object-fit: contain; mix-blend-mode: multiply; display: block; }
+  #library .nm { font-size: 13px; font-weight: 500; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #library .mt { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+  #library .del { opacity: 0; }
+  #library li:hover .del, #library li:focus-within .del { opacity: 1; }
+  .confirm { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding-top: 6px; }
+  .confirm button { font-size: 9.5px; padding: 4px 10px 3px; box-shadow: 2px 2px 0 var(--ink); }
+
+  .skeleton { background: linear-gradient(90deg, var(--paper-deep) 25%, #e3dac6 50%, var(--paper-deep) 75%); background-size: 400% 100%; animation: shimmer 1.4s linear infinite; border-radius: 2px; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  /* ------------------------------------------------------------- centre */
+  main { display: grid; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; background: var(--paper-deep); }
+  #canvasbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--paper);
+    border-bottom: 1.5px solid var(--ink); flex-wrap: wrap; }
+  #zoomLabel { font-size: 10px; letter-spacing: .1em; color: var(--ink-faint); min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+  #stageWrap { position: relative; min-height: 0; overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  #editor { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  body.panning #editor { cursor: grabbing; }
+  #stageMsg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center; padding: 30px; pointer-events: none; }
+  #stageMsg h3 { font: 400 22px/1.2 var(--display); margin: 0; }
+  #stageMsg p { margin: 0; max-width: 34ch; color: var(--ink-soft); font-size: 13px; }
+  #preview3d { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--paper-deep); }
+
+  /* ------------------------------------------------------------- regions list */
+  #regionList { list-style: none; margin: 0; padding: 0; max-height: 44vh; overflow: auto; }
+  #regionList li { display: grid; grid-template-columns: auto 22px minmax(0, 1fr) auto auto; align-items: center; gap: 7px;
+    padding: 5px 2px; border-bottom: 1px solid var(--rule); cursor: pointer; }
+  #regionList li:hover { background: var(--paper-deep); }
+  #regionList li[aria-selected="true"] { background: var(--ink); color: var(--paper); }
+  #regionList li[aria-selected="true"] .rn, #regionList li[aria-selected="true"] .rk { color: var(--paper); }
+  #regionList li.drop-before { box-shadow: inset 0 2px 0 var(--ink); }
+  #regionList li.drop-after { box-shadow: inset 0 -2px 0 var(--ink); }
+  #regionList .grip { color: var(--ink-faint); cursor: grab; font-size: 11px; line-height: 1; letter-spacing: -1px; }
+  #regionList .rn { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--ink-faint); text-align: right; }
+  #regionList .rname { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #regionList .rname.unnamed { color: inherit; opacity: .5; font-style: italic; }
+  #regionList .rk { font-size: 9px; letter-spacing: .1em; color: var(--ink-faint); }
+  #regionList input { border-bottom-color: currentColor; font-size: 12.5px; }
+  #regionList .del { opacity: 0; }
+  #regionList li:hover .del, #regionList li:focus-within .del { opacity: 1; }
+  #regionList li[aria-selected="true"] .icon-btn { color: var(--paper); }
+  #regionList li[aria-selected="true"] .icon-btn:hover { border-color: var(--paper); }
+
+  /* ------------------------------------------------------------- render */
+  #progress { display: none; gap: 6px; flex-direction: column; }
+  #progress.on { display: flex; }
+  .bar { height: 5px; background: var(--paper-deep); border: 1.5px solid var(--ink); border-radius: 999px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--ink); width: 0; transition: width .25s ease; }
+  @media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+  #progressText { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+
+  #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 16px 10px; }
+  .piece { display: flex; flex-direction: column; gap: 4px; cursor: pointer; text-align: left; background: none; border: 0; padding: 0; }
+  .piece .art { height: 84px; display: grid; place-items: center; background: var(--paper-deep); }
+  .piece img { max-width: 100%; max-height: 84px; filter: brightness(0); display: block; }
+  .piece .cap { font-size: 10px; letter-spacing: .06em; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .piece .sub { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .piece .sub.flag { color: var(--ink); font-weight: 600; }
+  .piece:hover .art { outline: 1.5px solid var(--ink); outline-offset: 2px; }
+  .piece .dl { display: flex; gap: 6px; font-size: 8.5px; letter-spacing: .1em; text-transform: uppercase; }
+  .piece .dl a { color: var(--ink-faint); text-decoration: none; }
+  .piece .dl a:hover { color: var(--ink); text-decoration: underline; }
+
+  /* ------------------------------------------------------------- toasts */
+  #toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+  .toast { pointer-events: auto; background: var(--ink); color: var(--paper); padding: 9px 16px 8px; border-radius: 999px;
+    font-size: 11px; letter-spacing: .06em; box-shadow: 3px 3px 0 rgba(42, 38, 34, .3); cursor: pointer; max-width: 70vw;
+    animation: rise .18s ease-out; }
+  .toast.bad { background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+  @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before { animation-duration: .001ms !important; transition-duration: .001ms !important; } }
+
+  /* ------------------------------------------------------------- help */
+  dialog { border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink); padding: 0; max-width: 560px; width: calc(100vw - 40px); box-shadow: 8px 8px 0 var(--ink); }
+  dialog::backdrop { background: rgba(42, 38, 34, .35); }
+  dialog .head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1.5px solid var(--ink); }
+  dialog h2 { font: 400 18px/1 var(--display); color: var(--ink); letter-spacing: 0; text-transform: none; }
+  dialog .body { padding: 6px 18px 20px; max-height: 65vh; overflow: auto; }
+  kbd { font: 600 10px/1 var(--ui); letter-spacing: .06em; border: 1.5px solid var(--ink); border-radius: 4px; padding: 3px 6px 2px; background: var(--paper); display: inline-block; }
+  .keys { display: grid; grid-template-columns: 120px 1fr; gap: 7px 14px; align-items: baseline; margin: 14px 0 0; }
+  .keys dt { text-align: right; }
+  .keys dd { margin: 0; font-size: 12.5px; color: var(--ink-soft); }
+  .keys .grp { grid-column: 1 / -1; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); border-bottom: 1px solid var(--rule); padding-bottom: 4px; margin-top: 10px; }
 </style>
 </head>
-<body>
+<body class="right-open">
+
 <header>
-  <h1>flash-to-render</h1>
-  <span id="status">loading library</span>
+  <button class="icon-btn" id="toggleLeft" title="Library rail ( [ )" aria-label="Toggle library rail">&#9776;</button>
+  <h1 id="wordmark">flash-to-render</h1>
+  <div id="crumb"><span id="crumbName" class="faint">no sheet open</span><span id="crumbMeta"></span></div>
+  <span class="spacer"></span>
+  <span id="saveState" data-s="idle" aria-live="polite">Ready</span>
+  <button class="icon-btn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+  <button class="icon-btn" id="toggleRight" title="Inspector rail ( ] )" aria-label="Toggle inspector rail">&#9707;</button>
 </header>
 
-<aside>
-  <h2>Library</h2>
-  <form id="upload">
-    <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
-    <input type="text" id="uploadName" placeholder="name (optional)">
-    <button type="submit">Upload image or sheet</button>
-  </form>
-  <ul id="library"></ul>
-</aside>
-
-<main>
-  <div id="toolbar">
-    <span id="tools"><button id="toolBox" class="on" title="Box tool (B)">Box</button><button id="toolLasso" title="Lasso tool (L)">Lasso</button></span>
-    <button id="redetect" disabled>Re-detect</button>
-    <div id="settings">
-      <label>merge kernel <input type="number" id="optKernel" min="3" step="2" placeholder="auto"></label>
-      <label>min area <input type="number" id="optMinArea" min="0" step="50" placeholder="auto"></label>
-      <label>smoothing <select id="optSmooth"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select></label>
-      <label>fidelity <select id="optFidelity"><option value="fast">fast</option><option value="best">best</option></select></label>
-      <label><input type="checkbox" id="optRelief" checked> relief</label>
+<div id="shell">
+  <!-- ------------------------------------------------------------ library -->
+  <aside id="left" aria-label="Library">
+    <div class="inner">
+      <div class="rail-head">Library<span class="spacer"></span><span id="libCount" class="faint tiny"></span></div>
+      <div id="dropzone" tabindex="0" role="button">Drop a sheet &middot; paste &middot; or click to choose</div>
+      <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" multiple hidden>
+      <div id="uploadBar" hidden><i></i></div>
+      <ul id="library"></ul>
     </div>
-    <button id="save" disabled>Save boxes</button>
-    <a id="export" hidden download>Export regions</a>
-    <button id="suggest" disabled title="Name unnamed regions (Claude when the server has ANTHROPIC_API_KEY, else Sheet row-col)">Suggest names</button>
-    <button id="render" class="primary" disabled>Render</button>
-    <span id="hint">Box: drag to move, handles to resize, drag on empty canvas to add · Lasso: drag a freehand outline · polygon vertices: drag to adjust, double-click an edge to insert, Delete removes · double-click a region to rename · Delete removes · arrows nudge (shift = 10px) · Esc deselects · B / L switch tools</span>
-  </div>
+  </aside>
 
-  <div id="stage">
-    <div id="empty">Pick a sheet from the library or upload one.</div>
-    <canvas id="editor" tabindex="0" hidden></canvas>
-  </div>
+  <!-- ------------------------------------------------------------- canvas -->
+  <main>
+    <div id="canvasbar">
+      <span class="seg" role="group" aria-label="Tool">
+        <button id="toolSelect" aria-pressed="true" title="Select / move (V)">Select</button>
+        <button id="toolRect" aria-pressed="false" title="Rectangle (R)">Box</button>
+        <button id="toolLasso" aria-pressed="false" title="Lasso (L)">Lasso</button>
+      </span>
+      <button class="pill ghost" id="fit" title="Fit the sheet to the window (F)">Fit</button>
+      <span id="zoomLabel">100%</span>
+      <span class="spacer"></span>
+      <span class="seg" id="viewSwitch" role="group" aria-label="View" hidden>
+        <button id="viewSheet" aria-pressed="true">Sheet</button>
+        <button id="view3d" aria-pressed="false">3D</button>
+      </span>
+      <button class="pill ghost" id="redetect" disabled title="Re-run the auto-segmentation with the settings on the right">Re-detect</button>
+      <button class="pill ghost" id="suggest" disabled title="Name unnamed regions (Claude when the server has ANTHROPIC_API_KEY, else sheet numbering)">Suggest names</button>
+      <a class="pill ghost" id="export" hidden download style="text-decoration:none">Export JSON</a>
+    </div>
 
-  <section id="results">
-    <h2>Render</h2>
-    <div id="progress"></div>
-    <iframe id="viewer" title="3D preview" hidden></iframe>
-    <div id="download"></div>
-    <pre id="pieces"></pre>
-  </section>
-</main>
+    <div id="stageWrap">
+      <div id="stage">
+        <canvas id="editor" tabindex="0" aria-label="Sheet editor"></canvas>
+      </div>
+      <iframe id="preview3d" title="3D preview" hidden></iframe>
+      <div id="stageMsg">
+        <h3>Nothing open</h3>
+        <p>Pick a sheet from the library, drop an image on the left rail, or paste one from the clipboard.</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- ---------------------------------------------------------- inspector -->
+  <aside id="right" aria-label="Inspector">
+    <div class="inner">
+      <section class="block">
+        <div class="rail-head">Regions<span class="spacer"></span><span id="regionCount" class="faint tiny"></span></div>
+        <ul id="regionList" role="listbox" aria-label="Regions"></ul>
+        <div id="regionEmpty" class="tiny faint">No regions yet. Press <kbd>R</kbd> and drag a box, or <kbd>L</kbd> and draw a lasso.</div>
+        <div style="display:flex;gap:8px">
+          <button class="pill ghost" id="sortReading" disabled title="Reorder the list to match the sheet (top to bottom, left to right)">Sheet order</button>
+          <button class="pill ghost" id="delRegion" disabled title="Delete the selected region (Delete)">Delete</button>
+        </div>
+      </section>
+
+      <section class="block" id="inspect" hidden>
+        <div class="rail-head">Selected</div>
+        <div class="field"><span class="label">Name</span><input type="text" id="insName" placeholder="unnamed"></div>
+        <div class="field"><span class="label">Kind</span><span class="tiny dim" id="insKind"></span></div>
+        <div class="field"><span class="label">X</span><input type="number" id="insX" step="1"></div>
+        <div class="field"><span class="label">Y</span><input type="number" id="insY" step="1"></div>
+        <div class="field"><span class="label">Width</span><input type="number" id="insW" step="1" min="4"></div>
+        <div class="field"><span class="label">Height</span><input type="number" id="insH" step="1" min="4"></div>
+        <div class="field"><span class="label">Points</span><span class="tiny dim" id="insPts"></span></div>
+      </section>
+
+      <section class="block">
+        <div class="rail-head">Render<span class="spacer"></span><button class="icon-btn" id="toggleSettings" title="Detection &amp; trace settings">&#9881;</button></div>
+        <div id="settings" hidden>
+          <div class="field"><span class="label">Merge kernel</span><input type="number" id="optKernel" min="3" step="2" placeholder="auto"></div>
+          <div class="field"><span class="label">Min area</span><input type="number" id="optMinArea" min="0" step="50" placeholder="auto"></div>
+          <div class="field"><span class="label">Threshold</span><input type="number" id="optThreshold" min="1" max="254" step="5" placeholder="150"></div>
+          <div class="field"><span class="label">Smoothing</span><select id="optSmooth"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select></div>
+          <div class="field"><span class="label">Fidelity</span><select id="optFidelity"><option value="fast">fast</option><option value="best">best</option></select></div>
+          <div class="field"><span class="label">Stamp</span><select id="optStamp"><option value="tone">tone</option><option value="binary">binary</option></select></div>
+          <div class="field"><span class="label">Depth</span><input type="number" id="optDepth" min="0.005" max="0.2" step="0.005" placeholder="0.035"></div>
+          <div class="field check"><span class="label">Relief</span><input type="checkbox" id="optRelief" checked></div>
+        </div>
+        <button class="pill solid big" id="render" disabled>Render &nbsp;&#9166;</button>
+        <div id="progress"><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="progressFill"></i></div><div id="progressText"></div></div>
+      </section>
+
+      <section class="block" id="outputs" hidden>
+        <div class="rail-head">Outputs<span class="spacer"></span><select id="renderPick" style="width:auto"></select></div>
+        <div id="results"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="pill" id="downloadAll" download style="text-decoration:none">Download all</a>
+          <button class="pill ghost" id="open3d">View in 3D</button>
+        </div>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<dialog id="help">
+  <div class="head"><h2>Shortcuts</h2><span class="spacer" style="flex:1"></span><button class="icon-btn" id="helpClose" aria-label="Close">&#10005;</button></div>
+  <div class="body">
+    <dl class="keys">
+      <div class="grp">Tools</div>
+      <dt><kbd>V</kbd></dt><dd>Select &amp; move</dd>
+      <dt><kbd>R</kbd></dt><dd>Rectangle &mdash; drag on the sheet to add one</dd>
+      <dt><kbd>L</kbd></dt><dd>Lasso &mdash; drag a freehand outline, it closes on release</dd>
+      <div class="grp">Canvas</div>
+      <dt><kbd>Wheel</kbd> / pinch</dt><dd>Zoom around the pointer</dd>
+      <dt><kbd>Space</kbd> + drag</dt><dd>Pan (middle mouse, or drag empty paper with Select)</dd>
+      <dt><kbd>F</kbd></dt><dd>Fit the sheet to the window</dd>
+      <dt><kbd>1</kbd> &hellip; <kbd>9</kbd></dt><dd>Jump to region N</dd>
+      <div class="grp">Regions</div>
+      <dt><kbd>&larr;&uarr;&darr;&rarr;</kbd></dt><dd>Nudge 1 px (<kbd>Shift</kbd> = 10 px)</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Remove the selected region</dd>
+      <dt>Double-click</dt><dd>On an edge: insert a lasso vertex. On a region: rename it</dd>
+      <dt><kbd>Alt</kbd> + click</dt><dd>Delete a lasso vertex</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Cancel the draw in progress, then deselect</dd>
+      <div class="grp">Everything else</div>
+      <dt><kbd>&#8984;Z</kbd> / <kbd>Ctrl Z</kbd></dt><dd>Undo region edits</dd>
+      <dt><kbd>&#8679;&#8984;Z</kbd></dt><dd>Redo</dd>
+      <dt><kbd>&#8984;S</kbd></dt><dd>Save now (regions autosave anyway)</dd>
+      <dt><kbd>Enter</kbd></dt><dd>Render</dd>
+      <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Collapse the library / inspector rail</dd>
+      <dt><kbd>?</kbd></dt><dd>This sheet</dd>
+    </dl>
+  </div>
+</dialog>
 
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
-const status = $('status');
 const canvas = $('editor');
 const ctx = canvas.getContext('2d');
+const INK = '#2a2622', SOFT = '#5c554c', FAINT = '#9a9081', PAPER = '#ece5d6', DEEP = '#d9cfbb';
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // regions: [{ id, name, kind: 'rect' | 'polygon', points: [[x, y], ...] }] in image pixels
 const state = {
-  entry: null, img: null, regions: [], selected: -1, vertex: -1, dirty: false, scale: 1, dpr: 1,
-  tool: 'box', drag: null, mode: null, job: null, pollTimer: null,
+  entries: [], entry: null, img: null, loading: false,
+  regions: [], selected: -1, hover: -1, vertex: -1,
+  tool: 'select', drag: null, mode: null,
+  view: { zoom: 1, x: 0, y: 0 }, dpr: 1, space: false,
+  undo: [], redo: [], saveTimer: null, savePromise: null,
+  job: null, jobData: null, pollTimer: null, renders: [],
 };
 
-function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
-function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
-function fmtDate(t) { return new Date(t * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
-function uid() { return Math.random().toString(16).slice(2, 8); }
+// --------------------------------------------------------------------- chrome
+function toast(msg, bad) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (bad ? ' bad' : '');
+  el.textContent = msg;
+  el.addEventListener('click', () => el.remove());
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), bad ? 8000 : 3200);
+  return el;
+}
+function setSaveState(s, text) {
+  const el = $('saveState');
+  el.dataset.s = s;
+  el.textContent = text || { idle: 'Ready', dirty: 'Unsaved', saving: 'Saving', saved: 'Saved', error: 'Not saved' }[s];
+}
+const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB');
+function ago(t) {
+  if (!t) return '';
+  const s = Date.now() / 1000 - t;
+  if (s < 90) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  if (s < 86400 * 7) return Math.round(s / 86400) + 'd ago';
+  return new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+const uid = () => Math.random().toString(16).slice(2, 8);
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   const isJson = (r.headers.get('content-type') || '').includes('json');
   const body = isJson ? await r.json() : await r.text();
-  if (!r.ok) throw new Error((body && body.error) || r.statusText);
+  if (!r.ok) throw new Error((body && body.error) || r.statusText || ('HTTP ' + r.status));
   return body;
 }
+const json = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-// ------------------------------------------------------------------ geometry
+// ------------------------------------------------------------------- geometry
 function bbox(reg) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of reg.points) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
@@ -144,20 +455,20 @@ function inside(reg, x, y) {
   }
   return hit;
 }
-function rectPoints(x, y, w, h) { return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; }
+const rectPoints = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 function setRect(reg, x, y, w, h) { reg.points = rectPoints(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
 function translate(reg, dx, dy) {
   const W = state.img.width, H = state.img.height, b = bbox(reg);
-  dx = Math.max(-b.x, Math.min(dx, W - b.x - b.w)); dy = Math.max(-b.y, Math.min(dy, H - b.y - b.h));
+  dx = clamp(dx, -b.x, W - b.x - b.w); dy = clamp(dy, -b.y, H - b.y - b.h);
   reg.points = reg.points.map(([x, y]) => [Math.round(x + dx), Math.round(y + dy)]);
 }
-function clampPoint([x, y]) { return [Math.max(0, Math.min(Math.round(x), state.img.width)), Math.max(0, Math.min(Math.round(y), state.img.height))]; }
+const clampPoint = ([x, y]) => [clamp(Math.round(x), 0, state.img.width), clamp(Math.round(y), 0, state.img.height)];
 function simplify(points, tol) {  // Douglas-Peucker on an open polyline
   if (points.length < 3) return points;
   const sq = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
   const dist = (p, a, b) => {
     const l = sq(a, b); if (l === 0) return sq(p, a);
-    let t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / l; t = Math.max(0, Math.min(1, t));
+    let t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / l; t = clamp(t, 0, 1);
     return sq(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
   };
   const keep = new Array(points.length).fill(false); keep[0] = keep[points.length - 1] = true;
@@ -169,119 +480,18 @@ function simplify(points, tol) {  // Douglas-Peucker on an open polyline
   }
   return points.filter((_, i) => keep[i]);
 }
-
-// ------------------------------------------------------------------ library
-async function loadLibrary(selectId) {
-  const entries = await api('/api/library');
-  const ul = $('library');
-  ul.innerHTML = '';
-  for (const e of entries) {
-    const li = document.createElement('li');
-    li.dataset.id = e.id;
-    li.innerHTML = `<span class="name"></span><span class="meta"></span>`;
-    li.querySelector('.name').textContent = e.name;
-    li.querySelector('.meta').textContent = `${e.width}×${e.height} · ${fmtSize(e.size)} · ${fmtDate(e.added)}` + (e.box_count != null ? ` · ${e.box_count} region${e.box_count === 1 ? '' : 's'}` : '');
-    li.addEventListener('click', () => openEntry(e.id));
-    if (state.entry && state.entry.id === e.id) li.classList.add('active');
-    ul.appendChild(li);
-  }
-  say(`${entries.length} in library`);
-  if (selectId) openEntry(selectId);
-}
-
-$('upload').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const f = $('file').files[0];
-  if (!f) { say('choose a file first', true); return; }
-  const fd = new FormData();
-  fd.append('file', f);
-  fd.append('name', $('uploadName').value);
-  say('uploading and detecting…');
-  try {
-    const entry = await api('/api/library/upload', { method: 'POST', body: fd });
-    $('file').value = ''; $('uploadName').value = '';
-    await loadLibrary(entry.id);
-  } catch (e) { say('upload failed: ' + e.message, true); }
-});
-
-// ------------------------------------------------------------------ editor
-function settings() {
-  const k = parseInt($('optKernel').value, 10);
-  const a = parseInt($('optMinArea').value, 10);
-  return { merge_kernel: Number.isFinite(k) ? k : null, min_area: Number.isFinite(a) ? a : null, smooth: $('optSmooth').value, fidelity: $('optFidelity').value, relief: $('optRelief').checked, mode: 'auto' };
-}
-function applySettings(o) {
-  if (!o) return;
-  $('optKernel').value = o.merge_kernel ?? '';
-  $('optMinArea').value = o.min_area ?? '';
-  $('optSmooth').value = o.smooth || 'auto';
-  $('optFidelity').value = o.fidelity || 'fast';
-  $('optRelief').checked = o.relief !== false;
-}
-function setTool(t) {
-  state.tool = t;
-  $('toolBox').classList.toggle('on', t === 'box');
-  $('toolLasso').classList.toggle('on', t === 'lasso');
-  canvas.style.cursor = 'crosshair';
-}
-$('toolBox').addEventListener('click', () => setTool('box'));
-$('toolLasso').addEventListener('click', () => setTool('lasso'));
-function fromApi(r) { return { id: r.id || uid(), name: r.name || '', kind: r.kind === 'rect' ? 'rect' : 'polygon', points: r.points.map((p) => [p[0], p[1]]) }; }
-
-async function openEntry(id) {
-  if (state.dirty && !confirm('Discard unsaved region edits?')) return;
-  say('opening…');
-  try {
-    const entries = await api('/api/library');
-    state.entry = entries.find((e) => e.id === id);
-    for (const li of $('library').children) li.classList.toggle('active', li.dataset.id === id);
-    const img = new Image();
-    const loaded = new Promise((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('image failed to load')); });
-    img.src = `/api/library/${id}/image?t=${Date.now()}`;
-    const data = await api(`/api/library/${id}/boxes`);
-    await loaded;  // not img.decode(): Chrome can leave that pending forever on big images
-    state.img = img;
-    state.regions = data.regions.map(fromApi);
-    state.selected = -1; state.vertex = -1; state.dirty = false; state.mode = data.mode;
-    $('save').textContent = 'Save boxes';
-    applySettings(data.options);
-    $('empty').hidden = true; canvas.hidden = false;
-    $('redetect').disabled = $('save').disabled = $('render').disabled = $('suggest').disabled = false;
-    $('export').href = `/api/library/${id}/regions.json`; $('export').hidden = false;
-    $('results').classList.remove('on');
-    fit(); draw();
-    say(`${state.entry.name}: ${state.regions.length} region${state.regions.length === 1 ? '' : 's'} (${data.mode})`);
-    canvas.focus({ preventScroll: true });
-  } catch (e) { say('could not open: ' + e.message, true); }
-}
-
-function fit() {
-  // fit the whole sheet in the viewport (width and height) so editing never scrolls the page
-  if (!state.img) return;
-  const stage = $('stage');
-  const cw = Math.max(200, stage.clientWidth - 2);
-  const ch = Math.max(200, innerHeight - stage.getBoundingClientRect().top - 16);
-  state.dpr = Math.min(devicePixelRatio || 1, 2);
-  state.scale = Math.min(cw / state.img.width, ch / state.img.height);
-  const w = Math.round(state.img.width * state.scale), h = Math.round(state.img.height * state.scale);
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
-  canvas.width = Math.round(w * state.dpr);
-  canvas.height = Math.round(h * state.dpr);
-}
-addEventListener('resize', () => { fit(); draw(); });
-
-const HANDLE = 7; // css px
-function toImg(ev) {
-  const r = canvas.getBoundingClientRect();
-  return { x: (ev.clientX - r.left) / state.scale, y: (ev.clientY - r.top) / state.scale };
-}
-function rectHandles(reg) {
-  const s = state.scale, b = bbox(reg);
-  const x0 = b.x * s, y0 = b.y * s, x1 = (b.x + b.w) * s, y1 = (b.y + b.h) * s, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
-  return [['nw', x0, y0], ['n', xm, y0], ['ne', x1, y0], ['e', x1, ym], ['se', x1, y1], ['s', xm, y1], ['sw', x0, y1], ['w', x0, ym]];
-}
 // 1-based reading-order numbers derived from the current regions (same rule as segment.reading_positions)
+/** Put the region array in reading order, so list rows run 1, 2, 3 ... like the canvas labels. */
+function sortToReadingOrder() {
+  const numbers = readingNumbers();
+  state.regions = state.regions.map((r, i) => [numbers[i], r]).sort((a, b) => a[0] - b[0]).map((pair) => pair[1]);
+}
+/** Sort, then follow the selected region to its new slot. A hand-drag order survives until the next geometry edit. */
+function normalizeOrder() {
+  const id = state.selected >= 0 ? state.regions[state.selected].id : null;
+  sortToReadingOrder();
+  state.selected = id ? state.regions.findIndex((r) => r.id === id) : -1;
+}
 function readingNumbers() {
   const boxes = state.regions.map(bbox);
   const order = boxes.map((_, i) => i).sort((i, j) => (boxes[i].y - boxes[j].y) || (boxes[i].x - boxes[j].x));
@@ -302,201 +512,8 @@ function readingNumbers() {
   for (const row of rows) for (const i of row.sort((i, j) => boxes[i].x - boxes[j].x)) num[i] = ++n;
   return num;
 }
-
-function draw() {
-  if (!state.img) return;
-  const s = state.scale, d = state.dpr;
-  const numbers = readingNumbers();
-  ctx.setTransform(d, 0, 0, d, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(state.img, 0, 0, state.img.width * s, state.img.height * s);
-  state.regions.forEach((reg, i) => {
-    const sel = i === state.selected;
-    ctx.beginPath();
-    reg.points.forEach(([x, y], k) => (k ? ctx.lineTo(x * s, y * s) : ctx.moveTo(x * s, y * s)));
-    ctx.closePath();
-    if (sel) { ctx.fillStyle = 'rgba(47,111,219,.10)'; ctx.fill(); }
-    ctx.lineWidth = sel ? 2.5 : 1.25;
-    ctx.strokeStyle = sel ? '#2f6fdb' : '#c8321e';
-    ctx.stroke();
-    const b = bbox(reg), x = b.x * s, y = b.y * s;
-    const label = String(numbers[i]) + (reg.name ? ' ' + reg.name : '') + (reg.kind === 'polygon' ? ' ◌' : '');
-    ctx.font = '11px system-ui, sans-serif';
-    const tw = ctx.measureText(label).width + 8, ly = y - 16 < 0 ? y : y - 16;
-    ctx.fillStyle = sel ? '#2f6fdb' : '#c8321e';
-    ctx.fillRect(x, ly, tw, 16);
-    ctx.fillStyle = '#fff';
-    ctx.fillText(label, x + 4, ly + 12);
-    if (sel) {
-      ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5;
-      if (reg.kind === 'rect') {
-        ctx.fillStyle = '#fff';
-        for (const [, hx, hy] of rectHandles(reg)) { ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE); ctx.strokeRect(hx - HANDLE / 2 + .5, hy - HANDLE / 2 + .5, HANDLE - 1, HANDLE - 1); }
-      } else {
-        reg.points.forEach(([px, py], k) => {
-          ctx.fillStyle = k === state.vertex ? '#2f6fdb' : '#fff';
-          ctx.beginPath(); ctx.arc(px * s, py * s, HANDLE / 2 + 1, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        });
-      }
-    }
-  });
-  if (state.drag && state.drag.mode === 'lasso' && state.drag.path.length > 1) {
-    ctx.beginPath();
-    state.drag.path.forEach(([x, y], k) => (k ? ctx.lineTo(x * s, y * s) : ctx.moveTo(x * s, y * s)));
-    ctx.strokeStyle = '#2f6fdb'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
-  }
-}
-
-function hitRectHandle(reg, p) {
-  for (const [name, hx, hy] of rectHandles(reg)) if (Math.abs(p.x * state.scale - hx) <= HANDLE && Math.abs(p.y * state.scale - hy) <= HANDLE) return name;
-  return null;
-}
-function hitVertex(reg, p) {
-  const s = state.scale;
-  for (let k = 0; k < reg.points.length; k++) if (Math.hypot((p.x - reg.points[k][0]) * s, (p.y - reg.points[k][1]) * s) <= HANDLE) return k;
-  return -1;
-}
-function hitEdge(reg, p) {  // index i such that the edge i -> i+1 is within a few px; -1 otherwise
-  const s = state.scale, P = reg.points;
-  for (let i = 0; i < P.length; i++) {
-    const [ax, ay] = P[i], [bx, by] = P[(i + 1) % P.length];
-    const l = (bx - ax) ** 2 + (by - ay) ** 2; if (!l) continue;
-    let t = ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / l; t = Math.max(0, Math.min(1, t));
-    if (Math.hypot(p.x - (ax + t * (bx - ax)), p.y - (ay + t * (by - ay))) * s <= 5) return i;
-  }
-  return -1;
-}
-function hitRegion(p) {
-  let best = -1, bestArea = Infinity;
-  state.regions.forEach((reg, i) => { if (inside(reg, p.x, p.y)) { const a = area(reg); if (a < bestArea) { best = i; bestArea = a; } } });
-  return best;
-}
-function cursorFor(h) {
-  return { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h] || 'move';
-}
-function setDirty() { state.dirty = true; $('save').textContent = 'Save boxes *'; }
-function select(i, vertex = -1) { state.selected = i; state.vertex = vertex; }
-
-canvas.addEventListener('pointerdown', (ev) => {
-  if (ev.button !== 0 || !state.img) return;
-  canvas.focus({ preventScroll: true });
-  const p = toImg(ev);
-  const sel = state.regions[state.selected];
-  if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) {  // vertex handles work in both tools
-    state.vertex = hitVertex(sel, p);
-    state.drag = { mode: 'vertex', start: p, orig: sel.points[state.vertex].slice() };
-  } else if (state.tool === 'lasso') {
-    select(-1);
-    state.drag = { mode: 'lasso', start: p, path: [clampPoint([p.x, p.y])] };
-  } else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) {
-    state.drag = { mode: 'resize', handle: hitRectHandle(sel, p), start: p, orig: bbox(sel) };
-  } else {
-    const i = hitRegion(p);
-    if (i >= 0) { select(i); state.drag = { mode: 'move', start: p, orig: state.regions[i].points.map((q) => q.slice()) }; }
-    else { select(-1); state.drag = { mode: 'create', start: p, reg: null }; }
-  }
-  try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
-  draw();
-});
-canvas.addEventListener('pointermove', (ev) => {
-  if (!state.img) return;
-  const p = toImg(ev);
-  if (!state.drag) {
-    const sel = state.regions[state.selected];
-    if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) canvas.style.cursor = 'pointer';
-    else if (state.tool === 'lasso') canvas.style.cursor = 'crosshair';
-    else if (sel && sel.kind === 'rect' && hitRectHandle(sel, p)) canvas.style.cursor = cursorFor(hitRectHandle(sel, p));
-    else canvas.style.cursor = hitRegion(p) >= 0 ? 'move' : 'crosshair';
-    return;
-  }
-  const d = state.drag, dx = p.x - d.start.x, dy = p.y - d.start.y;
-  if (d.mode === 'move') {
-    const reg = state.regions[state.selected];
-    reg.points = d.orig.map((q) => q.slice()); translate(reg, dx, dy); setDirty();
-  } else if (d.mode === 'resize') {
-    const reg = state.regions[state.selected], o = d.orig;
-    let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-    if (d.handle.includes('w')) x0 = o.x + dx;
-    if (d.handle.includes('e')) x1 = o.x + o.w + dx;
-    if (d.handle.includes('n')) y0 = o.y + dy;
-    if (d.handle.includes('s')) y1 = o.y + o.h + dy;
-    const W = state.img.width, H = state.img.height;
-    const nx0 = Math.max(0, Math.min(x0, x1)), ny0 = Math.max(0, Math.min(y0, y1));
-    setRect(reg, nx0, ny0, Math.min(W - nx0, Math.max(4, Math.abs(x1 - x0))), Math.min(H - ny0, Math.max(4, Math.abs(y1 - y0))));
-    setDirty();
-  } else if (d.mode === 'vertex') {
-    const reg = state.regions[state.selected];
-    reg.points[state.vertex] = clampPoint([d.orig[0] + dx, d.orig[1] + dy]); setDirty();
-  } else if (d.mode === 'create') {
-    if (!d.reg) { d.reg = { id: uid(), name: '', kind: 'rect', points: rectPoints(d.start.x, d.start.y, 1, 1) }; state.regions.push(d.reg); select(state.regions.length - 1); }
-    const x = Math.max(0, Math.min(d.start.x, p.x)), y = Math.max(0, Math.min(d.start.y, p.y));
-    setRect(d.reg, x, y, Math.min(state.img.width - x, Math.abs(dx)), Math.min(state.img.height - y, Math.abs(dy)));
-  } else if (d.mode === 'lasso') {
-    const last = d.path[d.path.length - 1];
-    if (Math.hypot(p.x - last[0], p.y - last[1]) * state.scale >= 2) d.path.push(clampPoint([p.x, p.y]));
-  }
-  draw();
-});
-function endDrag(ev) {
-  const d = state.drag;
-  if (!d) return;
-  state.drag = null;
-  if (d.mode === 'create') {
-    if (d.reg) { const b = bbox(d.reg); if (b.w < 8 || b.h < 8) { state.regions.pop(); select(-1); } else setDirty(); }
-  } else if (d.mode === 'lasso') {
-    const pts = simplify(d.path, 1.5 / state.scale);
-    const reg = { id: uid(), name: '', kind: 'polygon', points: pts };
-    if (pts.length >= 3 && area(reg) >= 64) { state.regions.push(reg); select(state.regions.length - 1); setDirty(); }
-  }
-  try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
-  draw();
-}
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', endDrag);
-
-canvas.addEventListener('dblclick', (ev) => {
-  const p = toImg(ev);
-  // double-click on a polygon edge inserts a vertex (selected polygon first, then any polygon under the pointer)
-  const order = [state.selected, ...state.regions.keys()].filter((i, k, a) => i >= 0 && a.indexOf(i) === k);
-  for (const i of order) {
-    const reg = state.regions[i];
-    if (!reg || reg.kind !== 'polygon' || hitVertex(reg, p) >= 0) continue;
-    const e = hitEdge(reg, p);
-    if (e >= 0) { reg.points.splice(e + 1, 0, clampPoint([p.x, p.y])); select(i, e + 1); setDirty(); draw(); return; }
-  }
-  const i = hitRegion(p);
-  if (i < 0) return;
-  select(i);
-  const name = prompt('Name for piece No. ' + readingNumbers()[i], state.regions[i].name || '');
-  if (name === null) return;
-  state.regions[i].name = uniqueName(name.trim(), i);
-  setDirty(); draw();
-});
-
-canvas.addEventListener('keydown', (ev) => {
-  if (!state.img) return;
-  if (ev.key === 'b' || ev.key === 'B') { setTool('box'); return; }
-  if (ev.key === 'l' || ev.key === 'L') { setTool('lasso'); return; }
-  const reg = state.regions[state.selected];
-  if (ev.key === 'Escape') { select(-1); draw(); return; }
-  if (!reg) return;
-  if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    if (reg.kind === 'polygon' && state.vertex >= 0 && reg.points.length > 3) { reg.points.splice(state.vertex, 1); state.vertex = -1; }
-    else { state.regions.splice(state.selected, 1); select(-1); }
-    setDirty(); draw(); ev.preventDefault(); return;
-  }
-  const step = ev.shiftKey ? 10 : 1;
-  const nudge = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
-  if (nudge) { translate(reg, nudge[0], nudge[1]); setDirty(); draw(); ev.preventDefault(); }
-});
-addEventListener('keydown', (ev) => {
-  if (ev.target === canvas || /INPUT|SELECT|TEXTAREA/.test(ev.target.tagName)) return;
-  if (ev.key === 'b' || ev.key === 'B') setTool('box');
-  if (ev.key === 'l' || ev.key === 'L') setTool('lasso');
-});
-
 // names must be unique within the entry: "Mask", "Mask II", "Mask III" (same rule as the server)
-const ROMAN = (n) => { const t = [[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']]; let s = ''; for (const [v, r] of t) while (n >= v) { s += r; n -= v; } return s; };
+const ROMAN = (n) => { const t = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']]; let s = ''; for (const [v, r] of t) while (n >= v) { s += r; n -= v; } return s; };
 function uniqueName(name, selfIndex) {
   if (!name) return '';
   const taken = new Set(state.regions.filter((_, k) => k !== selfIndex).map((r) => (r.name || '').trim().toLowerCase()).filter(Boolean));
@@ -505,82 +522,1095 @@ function uniqueName(name, selfIndex) {
   return candidate;
 }
 
+// ----------------------------------------------------------- undo + autosave
+const snapshot = () => JSON.stringify(state.regions);
+function pushUndo(before) {
+  if (before === snapshot()) return false;
+  state.undo.push(before);
+  if (state.undo.length > 120) state.undo.shift();
+  state.redo.length = 0;
+  scheduleSave();
+  return true;
+}
+/** Run a region mutation as one undoable, autosaved step. */
+function edit(fn) {
+  const before = snapshot();
+  const out = fn();
+  pushUndo(before);
+  return out;
+}
+function restore(str) {
+  state.regions = JSON.parse(str);
+  state.selected = clamp(state.selected, -1, state.regions.length - 1);
+  state.vertex = -1;
+  scheduleSave();
+  refreshAll();
+}
+function undo() { if (!state.undo.length) return toast('nothing to undo'); state.redo.push(snapshot()); restore(state.undo.pop()); }
+function redo() { if (!state.redo.length) return toast('nothing to redo'); state.undo.push(snapshot()); restore(state.redo.pop()); }
+
+function scheduleSave() {
+  if (!state.entry) return;
+  setSaveState('dirty');
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { saveNow().catch(() => {}); }, 700);
+}
+async function saveNow() {
+  if (!state.entry) return;
+  clearTimeout(state.saveTimer);
+  const entryId = state.entry.id;
+  setSaveState('saving');
+  const body = { regions: state.regions, options: settings() };
+  state.savePromise = api(`/api/library/${entryId}/boxes`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    await state.savePromise;
+    setSaveState('saved');
+    refreshLibraryCounts();
+  } catch (e) {
+    setSaveState('error');
+    toast('could not save regions: ' + e.message, true);
+    throw e;
+  } finally { state.savePromise = null; }
+}
+
+// -------------------------------------------------------------------- library
+function skeletonRows(n) {
+  const ul = $('library');
+  ul.replaceChildren();
+  for (let i = 0; i < n; i++) {
+    const li = document.createElement('li');
+    li.style.cursor = 'default';
+    li.innerHTML = '<span class="thumb skeleton" style="background-color:var(--paper-deep)"></span><span><span class="skeleton" style="display:block;height:11px;width:70%"></span><span class="skeleton" style="display:block;height:8px;width:45%;margin-top:6px"></span></span><span></span>';
+    ul.appendChild(li);
+  }
+}
+
+async function loadLibrary(selectId) {
+  try {
+    state.entries = await api('/api/library');
+  } catch (e) {
+    $('library').replaceChildren();
+    toast('could not read the library: ' + e.message, true);
+    return;
+  }
+  drawLibrary();
+  if (selectId) openEntry(selectId);
+  else if (!state.entry && !state.entries.length) $('libCount').textContent = '';
+}
+/** Refresh the counts in the rail without disturbing the open sheet. */
+async function refreshLibraryCounts() {
+  try { state.entries = await api('/api/library'); drawLibrary(); } catch (_) { /* the rail can wait */ }
+}
+
+function drawLibrary() {
+  const ul = $('library');
+  ul.replaceChildren();
+  $('libCount').textContent = state.entries.length ? state.entries.length + ' sheets' : '';
+  if (!state.entries.length) {
+    const li = document.createElement('li');
+    li.style.cursor = 'default';
+    li.innerHTML = '<span></span><span class="tiny faint">Nothing here yet &mdash; drop a flash sheet above.</span><span></span>';
+    ul.appendChild(li);
+    return;
+  }
+  for (const e of state.entries) {
+    const li = document.createElement('li');
+    li.dataset.id = e.id;
+    li.tabIndex = 0;
+    li.setAttribute('aria-current', String(!!state.entry && state.entry.id === e.id));
+
+    const img = document.createElement('img');
+    img.className = 'thumb'; img.loading = 'lazy'; img.alt = '';
+    img.src = `/api/library/${e.id}/thumb`;
+
+    const mid = document.createElement('div');
+    mid.style.minWidth = '0';
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = e.name;
+    const mt = document.createElement('div'); mt.className = 'mt';
+    const bits = [e.box_count != null ? `${e.box_count} region${e.box_count === 1 ? '' : 's'}` : 'not scanned'];
+    bits.push(e.last_render ? 'rendered ' + ago(e.last_render) : `${e.width}×${e.height}`);
+    mt.textContent = bits.join(' · ');
+    mt.title = `${e.width}×${e.height} · ${fmtSize(e.size)}`;
+    mid.append(nm, mt);
+
+    const del = document.createElement('button');
+    del.className = 'icon-btn del'; del.innerHTML = '&#10005;'; del.title = 'Delete this sheet';
+    del.setAttribute('aria-label', 'Delete ' + e.name);
+    del.addEventListener('click', (ev) => { ev.stopPropagation(); askDelete(li, e); });
+
+    li.append(img, mid, del);
+    li.addEventListener('click', () => openEntry(e.id));
+    li.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEntry(e.id); } });
+    ul.appendChild(li);
+  }
+}
+
+function askDelete(li, entry) {
+  if (li.querySelector('.confirm')) return;
+  const row = document.createElement('div');
+  row.className = 'confirm';
+  row.innerHTML = '<span class="faint">Delete for good?</span>';
+  const yes = document.createElement('button'); yes.className = 'pill solid'; yes.textContent = 'Delete';
+  const no = document.createElement('button'); no.className = 'pill'; no.textContent = 'Keep';
+  no.addEventListener('click', (ev) => { ev.stopPropagation(); row.remove(); });
+  yes.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    try {
+      await api(`/api/library/${entry.id}`, { method: 'DELETE' });
+      if (state.entry && state.entry.id === entry.id) closeEntry();
+      toast(`deleted ${entry.name}`);
+      loadLibrary();
+    } catch (err) { toast('delete failed: ' + err.message, true); }
+  });
+  row.append(yes, no);
+  row.addEventListener('click', (ev) => ev.stopPropagation());
+  li.appendChild(row);
+  yes.focus();
+}
+
+// --------------------------------------------------------------------- upload
+function uploadFiles(files) {
+  const list = [...files].filter((f) => /\.(png|jpe?g|webp)$/i.test(f.name) || /^image\//.test(f.type));
+  if (!list.length) { toast('that is not a PNG, JPG or WebP', true); return; }
+  list.reduce((chain, f) => chain.then(() => uploadOne(f)), Promise.resolve());
+}
+function uploadOne(file) {
+  return new Promise((resolve) => {
+    const bar = $('uploadBar'), fill = bar.firstElementChild;
+    bar.hidden = false; fill.style.width = '0%';
+    setSaveState('saving', 'Uploading');
+    const fd = new FormData();
+    const named = /\.(png|jpe?g|webp)$/i.test(file.name) ? file.name : 'pasted.png';
+    fd.append('file', file, named);
+    fd.append('name', file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim());
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/library/upload');
+    xhr.upload.addEventListener('progress', (ev) => { if (ev.lengthComputable) fill.style.width = (ev.loaded / ev.total * 92) + '%'; });
+    xhr.addEventListener('load', () => {
+      fill.style.width = '100%';
+      setTimeout(() => { bar.hidden = true; }, 350);
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (_) { /* fall through */ }
+      if (xhr.status >= 200 && xhr.status < 300 && body) {
+        setSaveState('idle');
+        toast(`added ${body.name}`);
+        loadLibrary(body.id);
+      } else {
+        setSaveState('error', 'Upload failed');
+        toast('upload failed: ' + ((body && body.error) || xhr.statusText || xhr.status), true);
+      }
+      resolve();
+    });
+    xhr.addEventListener('error', () => { bar.hidden = true; setSaveState('error', 'Upload failed'); toast('upload failed: network error', true); resolve(); });
+    xhr.send(fd);
+  });
+}
+$('file').addEventListener('change', (ev) => { uploadFiles(ev.target.files); ev.target.value = ''; });
+$('dropzone').addEventListener('click', () => $('file').click());
+$('dropzone').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); $('file').click(); } });
+
+let dragDepth = 0;
+for (const type of ['dragenter', 'dragover']) {
+  document.addEventListener(type, (ev) => {
+    if (!ev.dataTransfer || ![...ev.dataTransfer.types].includes('Files')) return;
+    ev.preventDefault();
+    if (type === 'dragenter') dragDepth++;
+    document.body.classList.add('dragging');
+  });
+}
+document.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+document.addEventListener('drop', (ev) => {
+  if (!ev.dataTransfer || !ev.dataTransfer.files.length) return;
+  ev.preventDefault();
+  dragDepth = 0; document.body.classList.remove('dragging');
+  uploadFiles(ev.dataTransfer.files);
+});
+document.addEventListener('paste', (ev) => {
+  const items = [...(ev.clipboardData ? ev.clipboardData.files : [])];
+  if (!items.length) return;
+  ev.preventDefault();
+  uploadFiles(items);
+});
+
+// ----------------------------------------------------------------- open entry
+const fromApi = (r) => ({ id: r.id || uid(), name: r.name || '', kind: r.kind === 'rect' ? 'rect' : 'polygon', points: r.points.map((p) => [p[0], p[1]]) });
+
+function setStageMsg(title, body) {
+  const el = $('stageMsg');
+  el.replaceChildren();
+  const h = document.createElement('h3'); h.textContent = title;
+  const p = document.createElement('p'); p.textContent = body;
+  el.append(h, p);
+  el.hidden = false;
+}
+
+function closeEntry() {
+  state.entry = null; state.img = null; state.regions = []; state.selected = -1; state.vertex = -1;
+  state.undo.length = state.redo.length = 0; state.job = null; state.jobData = null; state.renders = [];
+  clearTimeout(state.pollTimer);
+  setStageMsg('Nothing open', 'Pick a sheet from the library, drop an image on the left rail, or paste one from the clipboard.');
+  $('outputs').hidden = true; $('viewSwitch').hidden = true; showSheet();
+  $('crumbName').textContent = 'no sheet open'; $('crumbName').className = 'faint'; $('crumbMeta').textContent = '';
+  for (const id of ['redetect', 'suggest', 'render', 'sortReading', 'delRegion']) $(id).disabled = true;
+  $('export').hidden = true;
+  setSaveState('idle');
+  refreshAll();
+}
+
+async function openEntry(id) {
+  if (state.savePromise) { try { await state.savePromise; } catch (_) { /* reported already */ } }
+  if (state.saveTimer) { try { await saveNow(); } catch (_) { return; } }
+  state.loading = true;
+  setStageMsg('Loading', 'Fetching the sheet\u2026');
+  try {
+    const entry = state.entries.find((e) => e.id === id) || await api(`/api/library/${id}`);
+    const img = new Image();
+    const loaded = new Promise((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('image failed to load')); });
+    img.src = `/api/library/${id}/image?t=${Date.now()}`;
+    const data = await api(`/api/library/${id}/boxes`);
+    await loaded;  // not img.decode(): Chrome can leave that pending forever on big images
+
+    state.entry = entry; state.img = img;
+    state.regions = data.regions.map(fromApi);
+    sortToReadingOrder();
+    state.selected = -1; state.vertex = -1; state.mode = data.mode;
+    state.undo.length = state.redo.length = 0;
+    state.job = null; state.jobData = null;
+    clearTimeout(state.pollTimer);
+    applySettings(data.options);
+    $('stageMsg').hidden = true;
+    for (const bid of ['redetect', 'suggest', 'render', 'sortReading']) $(bid).disabled = false;
+    $('export').href = `/api/library/${id}/regions.json`; $('export').hidden = false;
+    $('outputs').hidden = true; $('viewSwitch').hidden = true; showSheet();
+    $('progress').classList.remove('on');
+    setSaveState('idle');
+    resizeCanvas(); fitView(); refreshAll();
+    canvas.focus({ preventScroll: true });
+    loadRenders(id, true);
+    drawLibrary();
+  } catch (e) {
+    state.loading = false;
+    setStageMsg('Could not open', e.message);
+    toast('could not open that sheet: ' + e.message, true);
+  }
+  state.loading = false;
+}
+
+/** Past renders of this entry, so reopening a sheet shows what it last produced. */
+async function loadRenders(entryId, show) {
+  let list = [];
+  try { list = await api(`/api/library/${entryId}/renders`); } catch (_) { return; }
+  if (!state.entry || state.entry.id !== entryId) return;
+  state.renders = list;
+  const pick = $('renderPick');
+  pick.replaceChildren();
+  for (const r of list) {
+    const o = document.createElement('option');
+    o.value = r.id;
+    o.textContent = `${ago(r.created)} \u00b7 ${r.piece_count} piece${r.piece_count === 1 ? '' : 's'}`;
+    pick.appendChild(o);
+  }
+  pick.hidden = list.length < 2;
+  pick.value = state.job || (list[0] && list[0].id) || '';
+  if (show && list.length) showRender(pick.value);
+}
+$('renderPick').addEventListener('change', () => showRender($('renderPick').value));
+
+async function showRender(jobId) {
+  try {
+    const job = await api(`/api/jobs/${jobId}`);
+    state.job = jobId; state.jobData = job;
+    drawResults(job);
+  } catch (e) { toast('could not read that render: ' + e.message, true); }
+}
+
+// ------------------------------------------------------------------- settings
+function settings() {
+  const num = (id) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : null; };
+  return {
+    merge_kernel: num('optKernel') != null ? Math.round(num('optKernel')) : null,
+    min_area: num('optMinArea') != null ? Math.round(num('optMinArea')) : null,
+    threshold: num('optThreshold') != null ? Math.round(num('optThreshold')) : 150,
+    smooth: $('optSmooth').value,
+    fidelity: $('optFidelity').value,
+    stamp: $('optStamp').value,
+    depth: num('optDepth') != null ? num('optDepth') : 0.035,
+    relief: $('optRelief').checked,
+    mode: 'auto',
+  };
+}
+function applySettings(o) {
+  if (!o) return;
+  $('optKernel').value = o.merge_kernel ?? '';
+  $('optMinArea').value = o.min_area ?? '';
+  $('optThreshold').value = o.threshold ?? '';
+  $('optSmooth').value = o.smooth || 'auto';
+  $('optFidelity').value = o.fidelity || 'fast';
+  $('optStamp').value = o.stamp || 'tone';
+  $('optDepth').value = o.depth ?? '';
+  $('optRelief').checked = o.relief !== false;
+}
+$('toggleSettings').addEventListener('click', () => { $('settings').hidden = !$('settings').hidden; });
+for (const id of ['optKernel', 'optMinArea', 'optThreshold', 'optSmooth', 'optFidelity', 'optStamp', 'optDepth', 'optRelief']) {
+  $(id).addEventListener('change', () => { if (state.entry) scheduleSave(); });
+}
+
+// ---------------------------------------------------------------------- tools
+function setTool(t) {
+  state.tool = t;
+  $('toolSelect').setAttribute('aria-pressed', String(t === 'select'));
+  $('toolRect').setAttribute('aria-pressed', String(t === 'rect'));
+  $('toolLasso').setAttribute('aria-pressed', String(t === 'lasso'));
+  canvas.style.cursor = t === 'select' ? 'default' : 'crosshair';
+}
+$('toolSelect').addEventListener('click', () => setTool('select'));
+$('toolRect').addEventListener('click', () => setTool('rect'));
+$('toolLasso').addEventListener('click', () => setTool('lasso'));
+
+// --------------------------------------------------------------------- canvas
+function stageSize() { const r = $('stageWrap').getBoundingClientRect(); return { w: Math.max(1, r.width), h: Math.max(1, r.height) }; }
+function resizeCanvas() {
+  const { w, h } = stageSize();
+  state.dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  canvas.width = Math.round(w * state.dpr); canvas.height = Math.round(h * state.dpr);
+}
+function fitView() {
+  if (!state.img) return;
+  const { w, h } = stageSize(), pad = 26;
+  const z = Math.min((w - pad * 2) / state.img.width, (h - pad * 2) / state.img.height);
+  state.view.zoom = z;
+  state.view.x = (w - state.img.width * z) / 2;
+  state.view.y = (h - state.img.height * z) / 2;
+}
+function zoomAt(cx, cy, factor) {
+  const v = state.view, z = clamp(v.zoom * factor, 0.02, 24), k = z / v.zoom;
+  v.x = cx - (cx - v.x) * k; v.y = cy - (cy - v.y) * k; v.zoom = z;
+  clampView();
+}
+/** Keep at least a corner of the sheet on screen so panning can never lose it. */
+function clampView() {
+  if (!state.img) return;
+  const { w, h } = stageSize(), v = state.view, keep = 60;
+  const lox = keep - state.img.width * v.zoom, hix = w - keep;
+  const loy = keep - state.img.height * v.zoom, hiy = h - keep;
+  if (lox <= hix) v.x = clamp(v.x, lox, hix);
+  if (loy <= hiy) v.y = clamp(v.y, loy, hiy);
+}
+function toImg(ev) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (ev.clientX - r.left - state.view.x) / state.view.zoom, y: (ev.clientY - r.top - state.view.y) / state.view.zoom };
+}
+const toScreen = (x, y) => [x * state.view.zoom + state.view.x, y * state.view.zoom + state.view.y];
+
+const HANDLE = 8; // css px
+function rectHandles(reg) {
+  const b = bbox(reg);
+  const [x0, y0] = toScreen(b.x, b.y), [x1, y1] = toScreen(b.x + b.w, b.y + b.h);
+  const xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+  return [['nw', x0, y0], ['n', xm, y0], ['ne', x1, y0], ['e', x1, ym], ['se', x1, y1], ['s', xm, y1], ['sw', x0, y1], ['w', x0, ym]];
+}
+
+function draw() {
+  const { w, h } = stageSize(), d = state.dpr, v = state.view;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.fillStyle = DEEP;
+  ctx.fillRect(0, 0, w, h);
+  if (!state.img) return;
+
+  const sw = state.img.width * v.zoom, sh = state.img.height * v.zoom;
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(v.x, v.y, sw, sh);
+  ctx.imageSmoothingEnabled = v.zoom < 1.8;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(state.img, v.x, v.y, sw, sh);
+  ctx.restore();
+  ctx.strokeStyle = FAINT; ctx.lineWidth = 1;
+  ctx.strokeRect(v.x - .5, v.y - .5, sw + 1, sh + 1);
+
+  const numbers = readingNumbers();
+  ctx.font = '600 11px "Josefin Sans", system-ui, sans-serif';
+  ctx.textBaseline = 'alphabetic';
+
+  state.regions.forEach((reg, i) => {
+    const sel = i === state.selected, hov = i === state.hover;
+    ctx.beginPath();
+    reg.points.forEach(([x, y], k) => { const [sx, sy] = toScreen(x, y); k ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+    ctx.closePath();
+    if (sel) { ctx.fillStyle = 'rgba(42,38,34,.12)'; ctx.fill(); }
+    else if (hov) { ctx.fillStyle = 'rgba(42,38,34,.05)'; ctx.fill(); }
+    // a paper-coloured underline keeps the ink outline readable on black artwork
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(236,229,214,.85)'; ctx.lineWidth = sel ? 4.5 : 3;
+    ctx.stroke();
+    ctx.strokeStyle = INK; ctx.lineWidth = sel ? 2 : 1.25;
+    if (!sel && !hov) ctx.setLineDash(reg.kind === 'polygon' ? [5, 3] : []);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // number label, constant size at any zoom, tucked inside the view
+    const b = bbox(reg);
+    const [bx, by] = toScreen(b.x, b.y);
+    const text = String(numbers[i]) + (reg.name ? ' ' + reg.name : '');
+    const tw = Math.min(ctx.measureText(text).width + 12, Math.max(34, b.w * v.zoom + 40));
+    const lx = clamp(bx, 2, Math.max(2, stageSize().w - tw - 2));
+    const ly = by - 19 < 2 ? Math.min(by + 2, stageSize().h - 18) : by - 19;
+    ctx.fillStyle = sel ? INK : 'rgba(42,38,34,.78)';
+    roundRect(lx, ly, tw, 17, 8.5); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(lx, ly, tw, 17); ctx.clip();
+    ctx.fillStyle = PAPER;
+    ctx.fillText(text, lx + 6, ly + 12);
+    ctx.restore();
+
+    if (sel) {
+      ctx.lineWidth = 1.5; ctx.strokeStyle = INK;
+      if (reg.kind === 'rect') {
+        for (const [, hx, hy] of rectHandles(reg)) {
+          ctx.fillStyle = PAPER;
+          ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
+          ctx.strokeRect(hx - HANDLE / 2 + .5, hy - HANDLE / 2 + .5, HANDLE - 1, HANDLE - 1);
+        }
+      } else {
+        reg.points.forEach(([px, py], k) => {
+          const [sx, sy] = toScreen(px, py);
+          ctx.fillStyle = k === state.vertex ? INK : PAPER;
+          ctx.beginPath(); ctx.arc(sx, sy, HANDLE / 2 + 1, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        });
+      }
+    }
+  });
+
+  if (state.drag && state.drag.mode === 'lasso' && state.drag.path.length > 1) {
+    ctx.beginPath();
+    state.drag.path.forEach(([x, y], k) => { const [sx, sy] = toScreen(x, y); k ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+    ctx.strokeStyle = 'rgba(236,229,214,.85)'; ctx.lineWidth = 3.5; ctx.stroke();
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]); ctx.stroke(); ctx.setLineDash([]);
+  }
+  $('zoomLabel').textContent = Math.round(v.zoom * 100) + '%';
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+// ------------------------------------------------------------------ hit tests
+function hitRectHandle(reg, ev) {
+  const r = canvas.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+  for (const [name, hx, hy] of rectHandles(reg)) if (Math.abs(px - hx) <= HANDLE && Math.abs(py - hy) <= HANDLE) return name;
+  return null;
+}
+function hitVertex(reg, p) {
+  const s = state.view.zoom;
+  for (let k = 0; k < reg.points.length; k++) if (Math.hypot((p.x - reg.points[k][0]) * s, (p.y - reg.points[k][1]) * s) <= HANDLE) return k;
+  return -1;
+}
+function hitEdge(reg, p) {  // index i such that the edge i -> i+1 is within a few px; -1 otherwise
+  const s = state.view.zoom, P = reg.points;
+  for (let i = 0; i < P.length; i++) {
+    const [ax, ay] = P[i], [bx, by] = P[(i + 1) % P.length];
+    const l = (bx - ax) ** 2 + (by - ay) ** 2; if (!l) continue;
+    let t = ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / l; t = clamp(t, 0, 1);
+    if (Math.hypot(p.x - (ax + t * (bx - ax)), p.y - (ay + t * (by - ay))) * s <= 6) return i;
+  }
+  return -1;
+}
+function hitRegion(p) {
+  let best = -1, bestArea = Infinity;
+  state.regions.forEach((reg, i) => { if (inside(reg, p.x, p.y)) { const a = area(reg); if (a < bestArea) { best = i; bestArea = a; } } });
+  return best;
+}
+const cursorFor = (h) => ({ nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h] || 'move');
+
+/** Selection only touches the rows in place: rebuilding the list mid-double-click would eat the rename. */
+function select(i, vertex = -1) {
+  state.selected = i; state.vertex = vertex;
+  for (const li of $('regionList').children) li.setAttribute('aria-selected', String(Number(li.dataset.i) === i));
+  $('delRegion').disabled = i < 0;
+  refreshInspector();
+}
+
+// ---------------------------------------------------------------- pointer i/o
+canvas.addEventListener('pointerdown', (ev) => {
+  if (!state.img) return;
+  canvas.focus({ preventScroll: true });
+  const pan = ev.button === 1 || state.space || (ev.button === 0 && ev.altKey && state.tool !== 'select');
+  if (ev.button !== 0 && ev.button !== 1) return;
+  const p = toImg(ev);
+  const before = snapshot();
+
+  if (pan) {
+    state.drag = { mode: 'pan', start: p, sx: ev.clientX, sy: ev.clientY, ox: state.view.x, oy: state.view.y };
+    document.body.classList.add('panning');
+  } else if (state.tool === 'lasso') {
+    select(-1);
+    state.drag = { mode: 'lasso', before, start: p, path: [clampPoint([p.x, p.y])] };
+  } else if (state.tool === 'rect') {
+    select(-1);
+    state.drag = { mode: 'create', before, start: p, reg: null };
+  } else {
+    const sel = state.regions[state.selected];
+    if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) {
+      const k = hitVertex(sel, p);
+      if (ev.altKey) {  // alt-click a vertex removes it
+        if (sel.points.length > 3) { edit(() => sel.points.splice(k, 1)); select(state.selected); }
+        else toast('a lasso needs at least three points', true);
+      } else {
+        state.vertex = k;
+        state.drag = { mode: 'vertex', before, start: p, orig: sel.points[k].slice() };
+      }
+    } else if (sel && sel.kind === 'rect' && hitRectHandle(sel, ev)) {
+      state.drag = { mode: 'resize', before, handle: hitRectHandle(sel, ev), start: p, orig: bbox(sel) };
+    } else {
+      const i = hitRegion(p);
+      if (i >= 0) { select(i); state.drag = { mode: 'move', before, start: p, orig: state.regions[i].points.map((q) => q.slice()) }; }
+      else { state.drag = { mode: 'pan', start: p, sx: ev.clientX, sy: ev.clientY, ox: state.view.x, oy: state.view.y, maybeDeselect: true }; document.body.classList.add('panning'); }
+    }
+  }
+  try { canvas.setPointerCapture(ev.pointerId); } catch (_) { /* Safari on some inputs */ }
+  draw();
+});
+
+canvas.addEventListener('pointermove', (ev) => {
+  if (!state.img) return;
+  const p = toImg(ev);
+  if (!state.drag) {
+    const hov = hitRegion(p);
+    if (hov !== state.hover) { state.hover = hov; draw(); }
+    const sel = state.regions[state.selected];
+    if (state.space) canvas.style.cursor = 'grab';
+    else if (sel && sel.kind === 'polygon' && hitVertex(sel, p) >= 0) canvas.style.cursor = ev.altKey ? 'not-allowed' : 'pointer';
+    else if (state.tool !== 'select') canvas.style.cursor = 'crosshair';
+    else if (sel && sel.kind === 'rect' && hitRectHandle(sel, ev)) canvas.style.cursor = cursorFor(hitRectHandle(sel, ev));
+    else canvas.style.cursor = hov >= 0 ? 'move' : 'default';
+    return;
+  }
+  const d = state.drag, start = d.start || p, dx = p.x - start.x, dy = p.y - start.y;
+  if (d.mode === 'pan') {
+    if (Math.abs(ev.clientX - d.sx) + Math.abs(ev.clientY - d.sy) > 3) d.moved = true;
+    state.view.x = d.ox + (ev.clientX - d.sx); state.view.y = d.oy + (ev.clientY - d.sy);
+    clampView();
+  } else if (d.mode === 'move') {
+    const reg = state.regions[state.selected];
+    reg.points = d.orig.map((q) => q.slice()); translate(reg, dx, dy);
+  } else if (d.mode === 'resize') {
+    const reg = state.regions[state.selected], o = d.orig;
+    let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
+    if (d.handle.includes('w')) x0 = o.x + dx;
+    if (d.handle.includes('e')) x1 = o.x + o.w + dx;
+    if (d.handle.includes('n')) y0 = o.y + dy;
+    if (d.handle.includes('s')) y1 = o.y + o.h + dy;
+    const W = state.img.width, H = state.img.height;
+    const nx0 = clamp(Math.min(x0, x1), 0, W), ny0 = clamp(Math.min(y0, y1), 0, H);
+    setRect(reg, nx0, ny0, Math.min(W - nx0, Math.max(4, Math.abs(x1 - x0))), Math.min(H - ny0, Math.max(4, Math.abs(y1 - y0))));
+  } else if (d.mode === 'vertex') {
+    state.regions[state.selected].points[state.vertex] = clampPoint([d.orig[0] + dx, d.orig[1] + dy]);
+  } else if (d.mode === 'create') {
+    if (!d.reg) { d.reg = { id: uid(), name: '', kind: 'rect', points: rectPoints(d.start.x, d.start.y, 1, 1) }; state.regions.push(d.reg); select(state.regions.length - 1); }
+    const x = clamp(Math.min(d.start.x, p.x), 0, state.img.width), y = clamp(Math.min(d.start.y, p.y), 0, state.img.height);
+    setRect(d.reg, x, y, Math.min(state.img.width - x, Math.abs(dx)), Math.min(state.img.height - y, Math.abs(dy)));
+  } else if (d.mode === 'lasso') {
+    const last = d.path[d.path.length - 1];
+    if (Math.hypot(p.x - last[0], p.y - last[1]) * state.view.zoom >= 2) d.path.push(clampPoint([p.x, p.y]));
+  }
+  if (d.mode === 'move' || d.mode === 'resize' || d.mode === 'vertex') refreshInspector();
+  draw();
+});
+
+function endDrag(ev) {
+  const d = state.drag;
+  if (!d) return;
+  state.drag = null;
+  document.body.classList.remove('panning');
+  if (d.mode === 'pan') {
+    if (d.maybeDeselect && !d.moved) select(-1);
+  } else if (d.mode === 'create') {
+    const b = d.reg ? bbox(d.reg) : null;
+    if (!d.reg || b.w < 6 || b.h < 6) { if (d.reg) state.regions.pop(); select(-1); }
+    else { pushUndo(d.before); state.selected = state.regions.length - 1; toast('box added'); }
+  } else if (d.mode === 'lasso') {
+    const pts = simplify(d.path, 1.5 / state.view.zoom);
+    const reg = { id: uid(), name: '', kind: 'polygon', points: pts };
+    if (pts.length >= 3 && area(reg) >= 64) { state.regions.push(reg); pushUndo(d.before); state.selected = state.regions.length - 1; toast(`lasso added (${pts.length} points)`); }
+    else toast('that lasso was too small', true);
+  } else {
+    pushUndo(d.before);
+  }
+  if (d.mode !== 'pan') normalizeOrder();
+  try { canvas.releasePointerCapture(ev.pointerId); } catch (_) { /* fine */ }
+  refreshAll();
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('pointerleave', () => { if (!state.drag && state.hover >= 0) { state.hover = -1; draw(); } });
+
+canvas.addEventListener('wheel', (ev) => {
+  if (!state.img) return;
+  ev.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  // ctrlKey is what a trackpad pinch sends; a plain wheel zooms too, and shift-wheel pans sideways
+  if (ev.shiftKey && !ev.ctrlKey) {
+    state.view.x -= (ev.deltaX || ev.deltaY);
+    clampView();
+  } else {
+    const step = ev.ctrlKey ? 0.012 : 0.0022;
+    zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * step));
+  }
+  draw();
+}, { passive: false });
+
+canvas.addEventListener('dblclick', (ev) => {
+  if (!state.img) return;
+  const p = toImg(ev);
+  // double-click on a polygon edge inserts a vertex (selected polygon first, then any polygon under the pointer)
+  const order = [state.selected, ...state.regions.keys()].filter((i, k, a) => i >= 0 && a.indexOf(i) === k);
+  for (const i of order) {
+    const reg = state.regions[i];
+    if (!reg || reg.kind !== 'polygon' || hitVertex(reg, p) >= 0) continue;
+    const e = hitEdge(reg, p);
+    if (e >= 0) { edit(() => reg.points.splice(e + 1, 0, clampPoint([p.x, p.y]))); select(i, e + 1); draw(); return; }
+  }
+  const i = hitRegion(p);
+  if (i < 0) return;
+  select(i);
+  startRename(i);
+});
+
+$('fit').addEventListener('click', () => { fitView(); draw(); });
+
+// ------------------------------------------------------------- region list
+function drawRegionList() {
+  const ul = $('regionList');
+  ul.replaceChildren();
+  const numbers = readingNumbers();
+  $('regionCount').textContent = state.regions.length ? state.regions.length + '' : '';
+  $('regionEmpty').hidden = state.regions.length > 0;
+  $('delRegion').disabled = state.selected < 0;
+  $('sortReading').disabled = state.regions.length < 2;
+
+  state.regions.forEach((reg, i) => {
+    const li = document.createElement('li');
+    li.dataset.i = i;
+    li.draggable = true;
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', String(i === state.selected));
+
+    const grip = document.createElement('span'); grip.className = 'grip'; grip.textContent = '∷'; grip.title = 'Drag to reorder';
+    const rn = document.createElement('span'); rn.className = 'rn'; rn.textContent = numbers[i];
+    const nm = document.createElement('span'); nm.className = 'rname' + (reg.name ? '' : ' unnamed');
+    nm.textContent = reg.name || 'unnamed';
+    const kind = document.createElement('span'); kind.className = 'rk'; kind.textContent = reg.kind === 'rect' ? 'box' : 'lasso';
+    const del = document.createElement('button');
+    del.className = 'icon-btn del'; del.innerHTML = '&#10005;'; del.title = 'Delete region';
+    del.setAttribute('aria-label', 'Delete region ' + numbers[i]);
+    del.addEventListener('click', (ev) => { ev.stopPropagation(); removeRegion(i); });
+
+    li.append(grip, rn, nm, kind, del);
+    li.addEventListener('click', () => { select(i); focusRegion(i); draw(); });
+    li.addEventListener('dblclick', (ev) => { ev.stopPropagation(); startRename(i); });
+    li.addEventListener('dragstart', (ev) => { ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', String(i)); li.style.opacity = '.4'; });
+    li.addEventListener('dragend', () => { li.style.opacity = ''; for (const n of ul.children) n.classList.remove('drop-before', 'drop-after'); });
+    li.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      const r = li.getBoundingClientRect(), after = ev.clientY > r.top + r.height / 2;
+      for (const n of ul.children) n.classList.remove('drop-before', 'drop-after');
+      li.classList.add(after ? 'drop-after' : 'drop-before');
+    });
+    li.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const from = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+      const r = li.getBoundingClientRect();
+      let to = i + (ev.clientY > r.top + r.height / 2 ? 1 : 0);
+      if (!Number.isFinite(from) || from === to) { drawRegionList(); return; }
+      edit(() => {
+        const [moved] = state.regions.splice(from, 1);
+        if (from < to) to -= 1;
+        state.regions.splice(to, 0, moved);
+        state.selected = to;
+      });
+      refreshAll();
+    });
+    ul.appendChild(li);
+  });
+}
+
+function startRename(i) {
+  select(i);
+  const li = $('regionList').querySelector(`li[data-i="${i}"]`);
+  if (!li) return;
+  const slot = li.querySelector('.rname');
+  if (!slot) return;
+  const input = document.createElement('input');
+  input.type = 'text'; input.value = state.regions[i].name || ''; input.placeholder = 'name this piece';
+  input.setAttribute('aria-label', 'Region name');
+  slot.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    if (commit) {
+      const name = uniqueName(input.value.trim(), i);
+      if (name !== (state.regions[i].name || '')) edit(() => { state.regions[i].name = name; });
+    }
+    refreshAll();
+  };
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('keydown', (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+  });
+}
+
+function removeRegion(i) {
+  if (i < 0 || i >= state.regions.length) return;
+  const name = state.regions[i].name || 'region ' + readingNumbers()[i];
+  edit(() => { state.regions.splice(i, 1); state.selected = -1; state.vertex = -1; state.hover = -1; sortToReadingOrder(); });
+  toast(`removed ${name} \u2014 click to undo`).addEventListener('click', undo, { once: true });
+  refreshAll();
+}
+$('delRegion').addEventListener('click', () => removeRegion(state.selected));
+$('sortReading').addEventListener('click', () => {
+  const id = state.selected >= 0 ? state.regions[state.selected].id : null;
+  edit(sortToReadingOrder);
+  state.selected = id ? state.regions.findIndex((r) => r.id === id) : -1;
+  refreshAll();
+  toast('regions reordered to match the sheet');
+});
+
+/** Pan (and zoom out if needed) so region i is comfortably in view. */
+function focusRegion(i) {
+  const reg = state.regions[i];
+  if (!reg || !state.img) return;
+  const b = bbox(reg), { w, h } = stageSize(), v = state.view;
+  const [x0, y0] = toScreen(b.x, b.y), [x1, y1] = toScreen(b.x + b.w, b.y + b.h);
+  if (x0 > 20 && y0 > 20 && x1 < w - 20 && y1 < h - 20) return;
+  const want = Math.min(v.zoom, (w * 0.7) / Math.max(1, b.w), (h * 0.7) / Math.max(1, b.h));
+  v.zoom = clamp(want, 0.02, 24);
+  v.x = w / 2 - (b.x + b.w / 2) * v.zoom;
+  v.y = h / 2 - (b.y + b.h / 2) * v.zoom;
+  clampView();
+}
+
+// -------------------------------------------------------------- inspector
+function refreshInspector() {
+  const reg = state.regions[state.selected];
+  $('inspect').hidden = !reg;
+  $('delRegion').disabled = !reg;
+  if (!reg) return;
+  const b = bbox(reg);
+  if (document.activeElement !== $('insName')) $('insName').value = reg.name || '';
+  $('insKind').textContent = reg.kind === 'rect' ? 'rectangle' : 'lasso polygon';
+  $('insPts').textContent = reg.points.length + (reg.kind === 'rect' ? ' corners' : ' vertices');
+  for (const [id, val] of [['insX', b.x], ['insY', b.y], ['insW', b.w], ['insH', b.h]]) {
+    if (document.activeElement !== $(id)) $(id).value = Math.round(val);
+  }
+  const poly = reg.kind !== 'rect';
+  $('insW').disabled = $('insH').disabled = poly;
+  $('insW').title = $('insH').title = poly ? 'lasso size follows its vertices' : '';
+}
+$('insName').addEventListener('change', () => {
+  const reg = state.regions[state.selected];
+  if (!reg) return;
+  const name = uniqueName($('insName').value.trim(), state.selected);
+  if (name !== (reg.name || '')) edit(() => { reg.name = name; });
+  refreshAll();
+});
+for (const [id, apply] of [
+  ['insX', (reg, v, b) => translate(reg, v - b.x, 0)],
+  ['insY', (reg, v, b) => translate(reg, 0, v - b.y)],
+  ['insW', (reg, v, b) => setRect(reg, b.x, b.y, clamp(v, 4, state.img.width - b.x), b.h)],
+  ['insH', (reg, v, b) => setRect(reg, b.x, b.y, b.w, clamp(v, 4, state.img.height - b.y))],
+]) {
+  $(id).addEventListener('change', () => {
+    const reg = state.regions[state.selected];
+    const v = parseFloat($(id).value);
+    if (!reg || !Number.isFinite(v)) return;
+    edit(() => { apply(reg, Math.round(v), bbox(reg)); normalizeOrder(); });
+    refreshAll();
+  });
+}
+
+// ------------------------------------------------------------------- actions
+$('redetect').addEventListener('click', async () => {
+  if (!state.entry) return;
+  $('redetect').disabled = true;
+  try {
+    const data = await api(`/api/library/${state.entry.id}/detect`, json(settings()));
+    edit(() => { state.regions = data.regions.map(fromApi); sortToReadingOrder(); state.selected = -1; state.vertex = -1; });
+    state.mode = data.mode;
+    refreshAll();
+    toast(`detected ${data.regions.length} region${data.regions.length === 1 ? '' : 's'} (${data.mode})`);
+  } catch (e) { toast('detect failed: ' + e.message, true); }
+  $('redetect').disabled = false;
+});
+
 $('suggest').addEventListener('click', async () => {
   if (!state.entry) return;
-  if (state.dirty) { try { await saveBoxes(); } catch (e) { say('save failed: ' + e.message, true); return; } }
-  say('naming…');
   $('suggest').disabled = true;
   try {
-    const data = await api(`/api/library/${state.entry.id}/label`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'auto', force: false }) });
+    await saveNow();
+    const data = await api(`/api/library/${state.entry.id}/label`, json({ backend: 'auto', force: false }));
     const byId = new Map(data.regions.map((r) => [r.id, r.name]));
+    const before = snapshot();
     for (const r of state.regions) if (byId.has(r.id)) r.name = byId.get(r.id) || '';
-    draw();
+    state.undo.push(before); state.redo.length = 0;
+    refreshAll();
     const rep = data.report;
-    say(`named ${rep.named} with ${rep.backend}, ${rep.fallback} fallback, ${rep.kept} kept` + (rep.reason ? ' - ' + rep.reason : ''), !!rep.reason);
-    loadLibrary();
-  } catch (e) { say('naming failed: ' + e.message, true); }
+    setSaveState('saved');
+    toast(`named ${rep.named} with ${rep.backend}${rep.fallback ? `, ${rep.fallback} fallback` : ''}${rep.reason ? ' — ' + rep.reason : ''}`, !!rep.reason);
+    refreshLibraryCounts();
+  } catch (e) { toast('naming failed: ' + e.message, true); }
   $('suggest').disabled = false;
 });
 
-// ------------------------------------------------------------------ actions
-$('redetect').addEventListener('click', async () => {
-  if (!state.entry) return;
-  say('detecting…');
-  try {
-    const data = await api(`/api/library/${state.entry.id}/detect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings()) });
-    state.regions = data.regions.map(fromApi);
-    select(-1); state.mode = data.mode; setDirty(); draw();
-    say(`detected ${data.regions.length} region${data.regions.length === 1 ? '' : 's'} (${data.mode}) - not saved yet`);
-  } catch (e) { say('detect failed: ' + e.message, true); }
-});
-
-async function saveBoxes() {
-  const body = { regions: state.regions, options: settings() };
-  await api(`/api/library/${state.entry.id}/boxes`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  state.dirty = false; $('save').textContent = 'Save boxes';
-}
-$('save').addEventListener('click', async () => {
-  try { await saveBoxes(); say(`saved ${state.regions.length} regions`); loadLibrary(); } catch (e) { say('save failed: ' + e.message, true); }
-});
-
-$('render').addEventListener('click', async () => {
-  if (!state.entry) return;
-  if (!state.regions.length) { say('nothing to render: add a region first', true); return; }
+$('render').addEventListener('click', startRender);
+async function startRender() {
+  if (!state.entry || $('render').disabled) return;
+  if (!state.regions.length) { toast('nothing to render — draw a region first', true); return; }
   $('render').disabled = true;
+  $('progress').classList.add('on');
+  setProgress(0, state.regions.length, 'queued');
   try {
-    await saveBoxes();
+    await saveNow();
     const body = { regions: state.regions, ...settings() };
-    const job = await api(`/api/library/${state.entry.id}/render`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const job = await api(`/api/library/${state.entry.id}/render`, json(body));
     state.job = job.job_id;
-    $('results').classList.add('on'); $('viewer').hidden = true; $('viewer').src = 'about:blank';
-    $('download').textContent = ''; $('pieces').textContent = '';
-    $('progress').textContent = `rendering 0 / ${state.regions.length}`;
-    $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('outputs').hidden = true;
     poll();
-  } catch (e) { say('render failed: ' + e.message, true); $('render').disabled = false; }
-});
-
+  } catch (e) {
+    toast('render failed to start: ' + e.message, true);
+    $('progress').classList.remove('on');
+    $('render').disabled = false;
+  }
+}
+function setProgress(done, total, text) {
+  const pct = total ? Math.round(done / total * 100) : 0;
+  $('progressFill').style.width = pct + '%';
+  $('progressText').textContent = text;
+  $('progress').querySelector('.bar').setAttribute('aria-valuenow', String(pct));
+}
 async function poll() {
   clearTimeout(state.pollTimer);
   let job;
-  try { job = await api(`/api/jobs/${state.job}`); } catch (e) { say('lost the job: ' + e.message, true); $('render').disabled = false; return; }
+  try { job = await api(`/api/jobs/${state.job}`); }
+  catch (e) { toast('lost track of the render: ' + e.message, true); $('render').disabled = false; $('progress').classList.remove('on'); return; }
   const p = job.progress;
-  $('progress').textContent = job.status === 'running' || job.status === 'queued'
-    ? `rendering ${p.done} / ${p.total}${p.current ? ' - ' + p.current : ''}`
-    : job.status === 'failed' ? 'failed: ' + job.error : `rendered ${p.total} piece${p.total === 1 ? '' : 's'}`;
   if (job.status === 'done') {
-    $('viewer').src = job.preview; $('viewer').hidden = false;
-    const a = document.createElement('a'); a.href = job.download; a.textContent = 'Download outputs (.zip)'; $('download').replaceChildren(a);
-    const rows = job.pieces.map((q) => `${q.id.padEnd(22)} ${(q.kind || 'rect').padEnd(8)} ${(q.tone_mode || 'line').padEnd(5)} ${String(q.bbox[2]).padStart(5)}×${String(q.bbox[3]).padEnd(5)} tris ${String(q.triangles).padStart(6)}  fidelity ${q.fidelity ? q.fidelity.score.toFixed(3) : '  -  '}  holes ${String(q.holes).padStart(3)}  ${q.quality}${q.warnings.length ? '  (' + q.warnings.join('; ') + ')' : ''}`);
-    $('pieces').textContent = ['id                     kind     mode  size        triangles  fidelity  holes  quality', ...rows].join('\n');
+    setProgress(p.total, p.total, `rendered ${p.total} piece${p.total === 1 ? '' : 's'}`);
+    state.jobData = job;
+    drawResults(job);
     $('render').disabled = false;
-    say('render done');
-    loadLibrary();
-  } else if (job.status === 'failed') { $('render').disabled = false; say('render failed', true); }
-  else state.pollTimer = setTimeout(poll, 500);
+    toast(`rendered ${p.total} piece${p.total === 1 ? '' : 's'}`);
+    refreshLibraryCounts();
+    loadRenders(state.entry.id, false);
+  } else if (job.status === 'failed') {
+    setProgress(0, 1, 'failed');
+    toast('render failed: ' + (job.error || 'unknown error'), true);
+    $('render').disabled = false;
+  } else {
+    setProgress(p.done, p.total || state.regions.length, `rendering ${p.done} / ${p.total || state.regions.length}${p.current ? ' · ' + p.current : ''}`);
+    state.pollTimer = setTimeout(poll, 400);
+  }
+}
+function drawResults(job) {
+  const grid = $('results');
+  grid.replaceChildren();
+  const pieces = job.pieces || [];
+  if (!pieces.length) { $('outputs').hidden = true; return; }
+  $('outputs').hidden = false;
+  $('viewSwitch').hidden = false;
+  $('downloadAll').href = job.download || `/api/jobs/${job.id}/download.zip`;
+  for (const p of pieces) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'piece';
+    const files = p.files || {};
+    const art = document.createElement('div');
+    art.className = 'art';
+    if (files.png) {
+      const img = document.createElement('img');
+      img.src = `/api/jobs/${job.id}/preview/${files.png}`;
+      img.alt = p.name || p.id;
+      img.loading = 'lazy';
+      art.appendChild(img);
+    } else {
+      art.innerHTML = '<span class="tiny faint">no png</span>';
+    }
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    const num = p.index != null ? String(p.index).padStart(2, '0') : '';
+    cap.textContent = `${num} ${p.name || p.id || ''}`.trim();
+    cap.title = p.id || p.name || '';
+    const sub = document.createElement('div');
+    const fid = p.fidelity ? p.fidelity.score.toFixed(2) : '\u2013';
+    const bb = p.bbox || [0, 0, 0, 0];
+    sub.className = 'sub' + (p.quality === 'ok' ? '' : ' flag');
+    sub.textContent = p.quality === 'ok' ? `fid ${fid} \u00b7 ${(p.triangles || 0).toLocaleString()} tris` : `${p.quality} \u00b7 fid ${fid}`;
+    sub.title = [`${bb[2]}\u00d7${bb[3]} px at (${bb[0]}, ${bb[1]})`, `${p.outers} outline(s), ${p.holes} hole(s)`, `tone: ${p.tone_mode}`, ...(p.warnings || [])].join('\n');
+
+    const dl = document.createElement('div');
+    dl.className = 'dl';
+    for (const kind of ['png', 'svg', 'glb']) {
+      if (!files[kind]) continue;
+      const a = document.createElement('a');
+      a.href = `/api/jobs/${job.id}/preview/${files[kind]}`;
+      a.download = files[kind];
+      a.textContent = kind;
+      a.title = `Download ${files[kind]}`;
+      a.addEventListener('click', (ev) => ev.stopPropagation());
+      dl.appendChild(a);
+    }
+    item.append(art, cap, sub, dl);
+    item.addEventListener('click', () => {
+      const numbers = readingNumbers();
+      let i = state.regions.findIndex((r) => r.name && r.name === p.name);
+      if (i < 0 && p.index != null) i = numbers.indexOf(p.index);
+      if (i >= 0) { showSheet(); select(i); focusRegion(i); draw(); }
+    });
+    grid.appendChild(item);
+  }
+  const flagged = pieces.filter((p) => p.quality !== 'ok').length;
+  if (flagged) {
+    const note = document.createElement('div');
+    note.className = 'tiny faint';
+    note.style.gridColumn = '1 / -1';
+    note.textContent = `${flagged} piece${flagged === 1 ? '' : 's'} flagged — hover one for the warning.`;
+    grid.appendChild(note);
+  }
 }
 
-loadLibrary().catch((e) => say('library failed: ' + e.message, true));
+// ---------------------------------------------------------------- 3D preview
+function showSheet() {
+  $('preview3d').hidden = true;
+  $('stage').hidden = false;
+  $('stageMsg').hidden = !!state.entry ? true : $('stageMsg').hidden;
+  $('viewSheet').setAttribute('aria-pressed', 'true');
+  $('view3d').setAttribute('aria-pressed', 'false');
+}
+function show3d() {
+  if (!state.job) { toast('render something first', true); return; }
+  const frame = $('preview3d');
+  const src = `/api/jobs/${state.job}/preview/`;
+  if (frame.dataset.src !== src) { frame.src = src; frame.dataset.src = src; }
+  frame.hidden = false;
+  $('stage').hidden = true;
+  $('stageMsg').hidden = true;
+  $('viewSheet').setAttribute('aria-pressed', 'false');
+  $('view3d').setAttribute('aria-pressed', 'true');
+}
+$('viewSheet').addEventListener('click', showSheet);
+$('view3d').addEventListener('click', show3d);
+$('open3d').addEventListener('click', show3d);
+
+// ------------------------------------------------------------------- rails
+function toggleRail(side) {
+  document.body.classList.toggle(side + '-closed');
+  requestAnimationFrame(() => { resizeCanvas(); clampView(); draw(); });
+}
+$('toggleLeft').addEventListener('click', () => toggleRail('left'));
+$('toggleRight').addEventListener('click', () => toggleRail('right'));
+
+let lastBreak = null;
+function applyResponsive() {
+  const w = innerWidth;
+  const bp = w < 860 ? 'tiny' : w < 1180 ? 'narrow' : 'wide';
+  document.body.classList.toggle('floating', bp === 'tiny');
+  if (bp !== lastBreak) {
+    lastBreak = bp;
+    document.body.classList.toggle('left-closed', bp !== 'wide');
+    document.body.classList.toggle('right-closed', bp === 'tiny');
+  }
+  resizeCanvas(); clampView(); draw();
+}
+addEventListener('resize', applyResponsive);
+
+// ---------------------------------------------------------------- shortcuts
+const typing = (t) => t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+addEventListener('keydown', (ev) => {
+  if ($('help').open) { if (ev.key === 'Escape') $('help').close(); return; }
+  if (ev.key === '?' ) { ev.preventDefault(); $('help').showModal(); return; }
+  if (typing(ev.target)) return;
+  const meta = ev.metaKey || ev.ctrlKey;
+
+  if (meta && (ev.key === 'z' || ev.key === 'Z')) { ev.preventDefault(); ev.shiftKey ? redo() : undo(); return; }
+  if (meta && (ev.key === 'y' || ev.key === 'Y')) { ev.preventDefault(); redo(); return; }
+  if (meta && (ev.key === 's' || ev.key === 'S')) { ev.preventDefault(); saveNow().then(() => toast('saved')).catch(() => {}); return; }
+  if (meta) return;
+
+  if (ev.key === '[') { ev.preventDefault(); toggleRail('left'); return; }
+  if (ev.key === ']') { ev.preventDefault(); toggleRail('right'); return; }
+  if (ev.key === ' ' && !state.space && (ev.target === canvas || ev.target === document.body)) {
+    state.space = true; canvas.style.cursor = 'grab'; ev.preventDefault(); return;
+  }
+
+  if (ev.key === 'v' || ev.key === 'V') { setTool('select'); return; }
+  if (ev.key === 'r' || ev.key === 'R' || ev.key === 'b' || ev.key === 'B') { setTool('rect'); return; }
+  if (ev.key === 'l' || ev.key === 'L') { setTool('lasso'); return; }
+  if (ev.key === 'f' || ev.key === 'F') { fitView(); draw(); return; }
+
+  if (ev.key === 'Enter') { ev.preventDefault(); startRender(); return; }
+  if (ev.key === 'Escape') {
+    if (state.drag) {
+      if (state.drag.mode === 'create' && state.drag.reg) state.regions.pop();
+      state.drag = null; document.body.classList.remove('panning');
+      select(-1); refreshAll(); toast('draw cancelled');
+    } else select(-1), draw();
+    return;
+  }
+  if (/^[1-9]$/.test(ev.key)) {
+    const n = parseInt(ev.key, 10), numbers = readingNumbers();
+    const i = numbers.indexOf(n);
+    if (i >= 0) { select(i); focusRegion(i); draw(); }
+    return;
+  }
+  if (!state.img) return;
+  const reg = state.regions[state.selected];
+  if (!reg) return;
+  if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); removeRegion(state.selected); return; }
+  const step = ev.shiftKey ? 10 : 1;
+  const nudge = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
+  if (nudge) {
+    ev.preventDefault();
+    edit(() => { translate(reg, nudge[0], nudge[1]); normalizeOrder(); });
+    refreshAll();
+  }
+});
+addEventListener('keyup', (ev) => {
+  if (ev.key === ' ') { state.space = false; canvas.style.cursor = state.tool === 'select' ? 'default' : 'crosshair'; }
+});
+$('helpBtn').addEventListener('click', () => $('help').showModal());
+$('helpClose').addEventListener('click', () => $('help').close());
+$('help').addEventListener('click', (ev) => { if (ev.target === $('help')) $('help').close(); });
+
+// ------------------------------------------------------------------- refresh
+function refreshAll() {
+  refreshInspector();
+  drawRegionList();
+  updateCrumb();
+  draw();
+}
+function updateCrumb() {
+  if (!state.entry) return;
+  $('crumbName').textContent = state.entry.name;
+  $('crumbName').className = '';
+  const n = state.regions.length;
+  const bits = [`${n} region${n === 1 ? '' : 's'}`];
+  if (state.img) bits.push(state.img.width + '\u00d7' + state.img.height);
+  if (state.mode) bits.push(state.mode);
+  $('crumbMeta').textContent = bits.join(' \u00b7 ');
+}
+
+addEventListener('beforeunload', () => { if (state.saveTimer) saveNow().catch(() => {}); });
+
+skeletonRows(3);
+applyResponsive();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => draw()).catch(() => {});
+loadLibrary().then(() => { if (!state.entry && state.entries.length) openEntry(state.entries[0].id); });
 </script>
 </body>
 </html>
